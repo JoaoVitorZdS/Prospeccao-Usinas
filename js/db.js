@@ -1,176 +1,184 @@
-// db.js — camada de dados.
+// db.js — camada de dados, falando com Postgres de verdade via Supabase.
 //
-// Espelha o schema Postgres da seção 5 do plano em IndexedDB, mantendo os mesmos
-// nomes de tabela e coluna, para que o port futuro (`supabase/migrations/0001_init.sql`)
-// seja tradução mecânica e não redesenho.
+// Antes desta versão, este módulo falava com IndexedDB local (cada navegador
+// com sua própria base). Agora fala com o projeto Supabase configurado em
+// `supabase-config.js` (gitignored — ver supabase-config.example.js) — os
+// dados são reais e compartilhados entre todos os agentes e dispositivos.
 //
-// Duas regras do Postgres que o IndexedDB não tem e que são reimplementadas aqui:
-//   1. índice único parcial `lead_cnpj_ativo` → campo derivado `cnpj_ativo`, que só
-//      existe enquanto `deleted_at is null` (índice único do IDB ignora `undefined`);
-//   2. RLS por `owner_id` → não há servidor, então o filtro por dono é de UI. Está
-//      documentado como lacuna no SETUP.md; no Supabase vira policy de verdade.
+// A troca ficou concentrada nas PRIMITIVAS (get/todos/put/putMuitos/remover/
+// limparLoja/contar/percorrer) logo abaixo. Toda a lógica de negócio depois
+// delas — criarLead, buscarLeads, registrarInteracao, upsertEmpresa,
+// agregarEmpresas, dedup, supressão — não mudou uma linha: ela sempre foi
+// escrita por cima dessas primitivas, nunca falando com IndexedDB direto.
+// Esse desacoplamento é o que tornou a troca de backend uma operação
+// localizada, não uma reescrita do app inteiro.
+//
+// ⚠️ Fase 1, sem Entra ID: RLS está ligada no banco mas com políticas abertas
+// pra `anon` (ver supabase/migrations/0002_fase1_dados_compartilhados.sql) —
+// a publishable key usada aqui já é pública por design (vai no bundle do
+// navegador), então "aberta pra anon" não é uma chave vazando, é a mesma
+// ausência de isolamento por usuário que a versão local já tinha, documentada
+// em SETUP.md. Login real (Entra ID) é o próximo passo, não uma correção.
+//
+// `createClient` vem de vendor/supabase-js-*.umd.js, carregado como <script>
+// clássico em index.html ANTES deste módulo — por isso `window.supabase`
+// já existe quando `abrir()` roda. Vendorado (não CDN) de propósito: mantém
+// a CSP em `script-src 'self'`, sem abrir mão da política já testada.
 
 import { uuid, digits, normCnpj, normFone, foneKey, normEmail, slug, hojeISO, dataLocal } from './util.js';
 import { CONCESSIONARIAS, STATUS_MAP } from './seed.js';
-
-const NOME_DB = 'lex-prospecta';
-const VERSAO = 1;
+import { SUPABASE_URL, SUPABASE_KEY } from './supabase-config.js';
 
 export const LOJAS = ['profiles', 'concessionaria', 'usina_aneel', 'empresa', 'lead',
-  'interacao', 'supressao', 'import_lote', 'captura_config', 'config'];
+  'interacao', 'supressao', 'import_lote', 'captura_config'];
 
-let _db = null;
+const VERSAO_BACKUP = 2; // 1 = formato da era IndexedDB; 2 = inclui config local separado
+
+/** Nome da coluna de chave primária por tabela — só usado pelas primitivas abaixo. */
+const PK = {
+  profiles: 'id', concessionaria: 'codigo', usina_aneel: 'cod_empreendimento',
+  empresa: 'cnpj', lead: 'id', interacao: 'id', supressao: 'id',
+  import_lote: 'id', captura_config: 'id',
+};
+
+let _sb = null;
 
 export function abrir() {
-  if (_db) return Promise.resolve(_db);
-  return new Promise((res, rej) => {
-    const req = indexedDB.open(NOME_DB, VERSAO);
-    req.onupgradeneeded = (ev) => {
-      const db = req.result;
-      const antiga = ev.oldVersion;
-
-      if (antiga < 1) {
-        const profiles = db.createObjectStore('profiles', { keyPath: 'id' });
-        profiles.createIndex('email', 'email', { unique: true });
-
-        db.createObjectStore('concessionaria', { keyPath: 'codigo' });
-
-        const usina = db.createObjectStore('usina_aneel', { keyPath: 'cod_empreendimento' });
-        usina.createIndex('cnpj', 'cnpj');
-        usina.createIndex('uf', 'uf');
-        usina.createIndex('concessionaria_codigo', 'concessionaria_codigo');
-        usina.createIndex('dt_conexao', 'dt_conexao');
-
-        const empresa = db.createObjectStore('empresa', { keyPath: 'cnpj' });
-        empresa.createIndex('enriquecido_em', 'enriquecido_em');
-        empresa.createIndex('uf_principal', 'uf_principal');
-
-        const lead = db.createObjectStore('lead', { keyPath: 'id' });
-        lead.createIndex('cnpj_ativo', 'cnpj_ativo', { unique: true }); // dedup no "banco"
-        lead.createIndex('cnpj', 'cnpj');
-        lead.createIndex('owner_id', 'owner_id');
-        lead.createIndex('status', 'status');
-        lead.createIndex('proxima_acao_em', 'proxima_acao_em');
-        lead.createIndex('tel_key', 'tel_key');
-        lead.createIndex('email_key', 'email_key');
-        lead.createIndex('updated_at', 'updated_at');
-        lead.createIndex('concessionaria_codigo', 'concessionaria_codigo');
-
-        const inter = db.createObjectStore('interacao', { keyPath: 'id' });
-        inter.createIndex('lead_id', 'lead_id');
-        inter.createIndex('agente_id', 'agente_id');
-        inter.createIndex('ocorrido_em', 'ocorrido_em');
-
-        const sup = db.createObjectStore('supressao', { keyPath: 'id' });
-        sup.createIndex('cnpj', 'cnpj', { unique: true });
-        sup.createIndex('telefone', 'telefone', { unique: true });
-        sup.createIndex('email', 'email', { unique: true });
-
-        const lote = db.createObjectStore('import_lote', { keyPath: 'id' });
-        lote.createIndex('created_at', 'created_at');
-
-        db.createObjectStore('captura_config', { keyPath: 'id' });
-        db.createObjectStore('config', { keyPath: 'chave' });
-      }
-    };
-    req.onsuccess = () => {
-      _db = req.result;
-      _db.onversionchange = () => { _db.close(); _db = null; };
-      res(_db);
-    };
-    req.onerror = () => rej(req.error);
-    req.onblocked = () => rej(new Error('Banco bloqueado por outra aba aberta. Feche as demais abas.'));
+  if (_sb) return Promise.resolve(_sb);
+  if (typeof window === 'undefined' || !window.supabase?.createClient) {
+    throw new Error(
+      'supabase-js não carregou. Confira se vendor/supabase-js-*.umd.js está '
+      + 'incluído em index.html ANTES de js/app.js, e se js/supabase-config.js existe '
+      + '(copie de supabase-config.example.js e preencha com os dados do seu projeto).',
+    );
+  }
+  _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false }, // fase 1: sem login real, nada pra persistir
   });
+  return Promise.resolve(_sb);
 }
 
 /* ═══════════════ Primitivas ═══════════════ */
 
-const pedido = (req) => new Promise((res, rej) => {
-  req.onsuccess = () => res(req.result);
-  req.onerror = () => rej(req.error);
-});
+function checar(resp) {
+  if (resp.error) {
+    const e = new Error(resp.error.message || 'Erro no Supabase');
+    e.codigo = resp.error.code;
+    e.detalhe = resp.error.details;
+    throw e;
+  }
+  return resp.data;
+}
 
-export async function tx(lojas, modo, fn) {
-  const db = await abrir();
-  const t = db.transaction(lojas, modo);
-  const out = await fn(t, ...[].concat(lojas).map((l) => t.objectStore(l)));
-  await new Promise((res, rej) => {
-    t.oncomplete = res;
-    t.onerror = () => rej(t.error);
-    t.onabort = () => rej(t.error || new Error('Transação abortada'));
-  });
+/** PostgREST rejeita alguns valores `undefined` de forma inconsistente — sempre limpar antes de enviar. */
+function semUndefined(obj) {
+  const out = { ...obj };
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 }
 
+const TAMANHO_PAGINA = 1000; // teto do PostgREST por requisição
+
 export async function get(loja, chave) {
-  const db = await abrir();
-  return pedido(db.transaction(loja).objectStore(loja).get(chave));
+  if (chave == null) return undefined;
+  const sb = await abrir();
+  const data = await checar(await sb.from(loja).select('*').eq(PK[loja], chave).maybeSingle());
+  return data || undefined;
 }
 
+/**
+ * `indice`/`faixa`: quando os dois vêm preenchidos, filtra por igualdade
+ * nessa coluna (equivalente ao que antes era `IDBKeyRange.only(faixa)`).
+ * Pagina automaticamente além do limite de 1000 linhas por requisição do
+ * PostgREST — necessário pra `usina_aneel` depois de um import grande.
+ */
 export async function todos(loja, indice, faixa, limite) {
-  const db = await abrir();
-  const src = indice
-    ? db.transaction(loja).objectStore(loja).index(indice)
-    : db.transaction(loja).objectStore(loja);
-  if (limite == null) return pedido(src.getAll(faixa));
-  return pedido(src.getAll(faixa, limite));
+  const sb = await abrir();
+  let base = sb.from(loja).select('*');
+  if (indice && faixa != null) base = base.eq(indice, faixa);
+  if (limite) return checar(await base.limit(limite));
+
+  let acc = [], desde = 0;
+  for (;;) {
+    const pagina = await checar(await base.range(desde, desde + TAMANHO_PAGINA - 1));
+    acc = acc.concat(pagina);
+    if (pagina.length < TAMANHO_PAGINA) break;
+    desde += TAMANHO_PAGINA;
+  }
+  return acc;
 }
 
-export async function contar(loja, indice, faixa) {
-  const db = await abrir();
-  const st = db.transaction(loja).objectStore(loja);
-  return pedido(indice ? st.index(indice).count(faixa) : st.count(faixa));
+export async function contar(loja) {
+  const sb = await abrir();
+  const { count, error } = await sb.from(loja).select('*', { count: 'exact', head: true });
+  if (error) throw new Error(error.message);
+  return count || 0;
 }
 
 export async function put(loja, valor) {
-  const db = await abrir();
-  const t = db.transaction(loja, 'readwrite');
-  const r = pedido(t.objectStore(loja).put(valor));
-  await r;
-  return valor;
+  const sb = await abrir();
+  const data = await checar(await sb.from(loja).upsert(semUndefined(valor)).select().maybeSingle());
+  return data || valor;
 }
 
+/** Upsert em lotes — evita payload/URL grandes demais num import de milhares de linhas. */
 export async function putMuitos(loja, valores) {
   if (!valores.length) return 0;
-  await tx(loja, 'readwrite', (_t, st) => { for (const v of valores) st.put(v); });
+  const sb = await abrir();
+  const LOTE = 500;
+  const limpos = valores.map(semUndefined);
+  for (let i = 0; i < limpos.length; i += LOTE) {
+    await checar(await sb.from(loja).upsert(limpos.slice(i, i + LOTE)));
+  }
   return valores.length;
 }
 
 export async function remover(loja, chave) {
-  const db = await abrir();
-  const t = db.transaction(loja, 'readwrite');
-  await pedido(t.objectStore(loja).delete(chave));
+  const sb = await abrir();
+  await checar(await sb.from(loja).delete().eq(PK[loja], chave));
 }
 
 export async function limparLoja(loja) {
-  const db = await abrir();
-  const t = db.transaction(loja, 'readwrite');
-  await pedido(t.objectStore(loja).clear());
+  const sb = await abrir();
+  await checar(await sb.from(loja).delete().not(PK[loja], 'is', null));
 }
 
-/** Percorre um índice sem carregar tudo na memória. `fn` pode devolver false para parar. */
-export async function percorrer(loja, indice, faixa, fn) {
-  const db = await abrir();
-  return new Promise((res, rej) => {
-    const st = db.transaction(loja).objectStore(loja);
-    const src = indice ? st.index(indice) : st;
-    const req = src.openCursor(faixa);
-    req.onsuccess = () => {
-      const cur = req.result;
-      if (!cur) return res();
-      if (fn(cur.value) === false) return res();
-      cur.continue();
-    };
-    req.onerror = () => rej(req.error);
-  });
+/** Sem cursor de servidor via PostgREST — pagina e chama `fn` por linha. `fn` → false interrompe. */
+export async function percorrer(loja, _indice, _faixa, fn) {
+  const sb = await abrir();
+  let desde = 0;
+  for (;;) {
+    const pagina = await checar(await sb.from(loja).select('*').range(desde, desde + TAMANHO_PAGINA - 1));
+    for (const linha of pagina) {
+      if (fn(linha) === false) return;
+    }
+    if (pagina.length < TAMANHO_PAGINA) break;
+    desde += TAMANHO_PAGINA;
+  }
 }
 
-/* ═══════════════ config (chave/valor) ═══════════════ */
+/* ═══════════════ config (chave/valor) — fica no navegador, de propósito ═══════════════ */
+// `perfil_atual` e `aviso_ios_visto` são estado de DISPOSITIVO ("quem está usando
+// ESTE navegador"), não dado de negócio — não faz sentido sincronizar entre
+// aparelhos. `script_template`/`links_externos` idealmente seriam compartilhados
+// entre a equipe; por ora ficam por dispositivo também (mesma limitação que a
+// versão 100% local já tinha) — mover pra uma tabela `config` no Supabase é
+// trabalho isolado e pequeno quando isso virar dor de verdade.
 
-export const getConfig = async (chave, padrao = null) =>
-  (await get('config', chave))?.valor ?? padrao;
+const PREFIXO_CONFIG = 'lex-prospecta:';
 
-export const setConfig = (chave, valor) => put('config', { chave, valor });
+export async function getConfig(chave, padrao = null) {
+  try {
+    const bruto = localStorage.getItem(PREFIXO_CONFIG + chave);
+    return bruto == null ? padrao : JSON.parse(bruto);
+  } catch {
+    return padrao;
+  }
+}
+
+export async function setConfig(chave, valor) {
+  localStorage.setItem(PREFIXO_CONFIG + chave, JSON.stringify(valor));
+}
 
 /* ═══════════════ Concessionárias ═══════════════ */
 
@@ -398,18 +406,17 @@ export async function acharDuplicado({ cnpj, telefone, email }, cache) {
     return null;
   }
 
-  const db = await abrir();
-  const st = db.transaction('lead').objectStore('lead');
+  const sb = await abrir();
   if (c) {
-    const l = await pedido(st.index('cnpj_ativo').get(c));
+    const l = await checar(await sb.from('lead').select('*').eq('cnpj', c).is('deleted_at', null).maybeSingle());
     if (l) return { lead: l, por: 'cnpj' };
   }
   if (fk) {
-    const achados = (await pedido(st.index('tel_key').getAll(fk))).filter((l) => !l.deleted_at);
+    const achados = await checar(await sb.from('lead').select('*').eq('tel_key', fk).is('deleted_at', null).limit(1));
     if (achados.length) return { lead: achados[0], por: 'telefone' };
   }
   if (em) {
-    const achados = (await pedido(st.index('email_key').getAll(em))).filter((l) => !l.deleted_at);
+    const achados = await checar(await sb.from('lead').select('*').eq('email_key', em).is('deleted_at', null).limit(1));
     if (achados.length) return { lead: achados[0], por: 'email' };
   }
   return null;
@@ -434,23 +441,21 @@ export async function cacheDedup() {
 
 /* ═══════════════ Lead ═══════════════ */
 
-/** Deriva os campos calculados. Espelha o que no Postgres seriam trigger/generated column. */
+/** Deriva os campos calculados. No Postgres, quem cuida do índice único parcial
+ * por CNPJ ativo é a própria migration (`lead_cnpj_ativo`) — não precisa mais
+ * de um campo sintético pra imitar isso (era só necessário pro IndexedDB). */
 export function normalizarLead(l) {
   const cnpj = normCnpj(l.cnpj);
-  const tel = normFone(l.telefone);
   const out = {
     ...l,
     cnpj: cnpj || undefined,
-    telefone: tel || (l.telefone ? String(l.telefone).trim() : undefined),
+    telefone: normFone(l.telefone) || (l.telefone ? String(l.telefone).trim() : undefined),
     telefone2: normFone(l.telefone2) || undefined,
     email: normEmail(l.email) || undefined,
     tel_key: foneKey(l.telefone) || undefined,
     email_key: normEmail(l.email) || undefined,
     updated_at: new Date().toISOString(),
   };
-  // índice único parcial: só indexa enquanto o lead está ativo
-  if (cnpj && !out.deleted_at) out.cnpj_ativo = cnpj;
-  else delete out.cnpj_ativo;
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 }
@@ -479,7 +484,7 @@ export async function salvarLead(l) {
   return norm;
 }
 
-/** Soft delete — libera o CNPJ do índice único, preservando o histórico. */
+/** Soft delete — o índice único parcial da migration libera o CNPJ automaticamente. */
 export async function removerLead(id) {
   const l = await get('lead', id);
   if (!l) return null;
@@ -571,7 +576,7 @@ export async function registrarInteracao({ lead, agente_id, canal, sentido = 'sa
 }
 
 export async function interacoesDoLead(lead_id) {
-  const lista = await todos('interacao', 'lead_id', IDBKeyRange.only(lead_id));
+  const lista = await todos('interacao', 'lead_id', lead_id);
   return lista.sort((a, b) => (a.ocorrido_em < b.ocorrido_em ? 1 : -1));
 }
 
@@ -589,11 +594,11 @@ export async function registrarLote(dados) {
 }
 
 /* ═══════════════ Backup ═══════════════ */
-// Projeto autocontido não tem backup diário de Supabase Pro. O export JSON é o
-// substituto — e o único jeito de mover a base entre navegadores/máquinas.
+// Mesmo com dado permanente no Supabase, o export JSON continua útil: mover
+// entre projetos Supabase, backup fora de banda, ou auditoria pontual.
 
 export async function exportarBackup() {
-  const dump = { app: 'lex-prospecta', versao: VERSAO, exportado_em: new Date().toISOString(), dados: {} };
+  const dump = { app: 'lex-prospecta', versao: VERSAO_BACKUP, exportado_em: new Date().toISOString(), dados: {} };
   for (const loja of LOJAS) dump.dados[loja] = await todos(loja);
   return dump;
 }
@@ -604,8 +609,10 @@ export async function importarBackup(dump, { substituir = false } = {}) {
   for (const loja of LOJAS) {
     const registros = dump.dados?.[loja] || [];
     if (substituir) await limparLoja(loja);
-    // normaliza leads antigos para reconstruir os campos derivados
-    const prep = loja === 'lead' ? registros.map(normalizarLead) : registros;
+    // normaliza leads antigos (inclusive de backups da era IndexedDB) para reconstruir os campos derivados
+    const prep = loja === 'lead'
+      ? registros.map((r) => { const { cnpj_ativo, ...resto } = r; return normalizarLead(resto); })
+      : registros;
     resumo[loja] = await putMuitos(loja, prep);
   }
   _aliasIndex = null;
@@ -617,7 +624,7 @@ export async function apagarTudo() {
   _aliasIndex = null;
 }
 
-/** Uso de armazenamento — o navegador pode despejar dados sob pressão de disco. */
+/** Sobra do modo local — agora só reflete o que está em localStorage (pouco). Mantido pra não quebrar Config. */
 export async function usoArmazenamento() {
   if (!navigator.storage?.estimate) return null;
   const { usage, quota } = await navigator.storage.estimate();

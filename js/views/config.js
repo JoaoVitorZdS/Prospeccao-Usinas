@@ -1,6 +1,4 @@
 // views/config.js — configuração e operação (seção 7.G).
-// Também é onde mora o que o plano resolveria com Supabase e aqui não existe:
-// backup manual, gestão de perfis locais e persistência de armazenamento.
 
 import {
   h, fmtNum, fmtData, fmtDataHora, maskCnpj, maskFone, baixar, nomeArquivo, hojeISO,
@@ -9,7 +7,7 @@ import { SCRIPT_PADRAO, PLACEHOLDERS, CONCESSIONARIAS, renderScript } from '../s
 import {
   todos, get, put, remover, getConfig, setConfig, criarPerfil, definirPerfilAtual,
   suprimir, semearConcessionarias, invalidarAliases, exportarBackup, importarBackup,
-  apagarTudo, usoArmazenamento, contar,
+  apagarTudo, contar,
 } from '../db.js';
 import {
   cabecalhoPagina, card, toast, confirmar, perguntar, tabela, badge, kpi, vazio,
@@ -21,10 +19,9 @@ export async function viewConfig(params, ctxApp) {
   const { perfil, ehGestor, recarregarApp } = ctxApp;
   const raiz = h('div', { class: 'pagina' });
 
-  const [perfis, concessionarias, lotes, supressoes, tpl, links, uso] = await Promise.all([
+  const [perfis, concessionarias, lotes, supressoes, tpl, links] = await Promise.all([
     todos('profiles'), todos('concessionaria'), todos('import_lote'), todos('supressao'),
     getConfig('script_template', SCRIPT_PADRAO), getConfig('links_externos', LINKS_PADRAO),
-    usoArmazenamento(),
   ]);
 
   /* ═══════════ Script ═══════════ */
@@ -365,20 +362,12 @@ export async function viewConfig(params, ctxApp) {
     },
   });
 
-  const pctUso = uso && uso.quota ? (uso.usage / uso.quota) * 100 : null;
   const cardBackup = card('Backup e armazenamento',
-    h('p', { class: 'aviso' },
-      'Esta versão guarda tudo no IndexedDB DESTE navegador. Não há backup automático, e o '
-      + 'navegador pode descartar os dados sob pressão de disco. Exporte o backup ao fim do dia '
-      + '— é o equivalente ao backup diário do Supabase Pro previsto no plano.'),
-    uso
-      ? h('div', { class: 'kpis kpis--fina' },
-        kpi('Em uso', `${(uso.usage / 1048576).toFixed(1)} MB`,
-          pctUso != null ? `${pctUso.toFixed(1)}% da cota` : ''),
-        kpi('Cota do navegador', `${(uso.quota / 1048576).toFixed(0)} MB`),
-        kpi('Armazenamento persistente', uso.persistido ? 'sim' : 'não',
-          uso.persistido ? 'protegido contra descarte' : 'clique em "Proteger dados"'))
-      : null,
+    h('p', { class: 'texto-fraco' },
+      'Os dados vivem no Supabase — reais e compartilhados entre todos os agentes e '
+      + 'dispositivos, não numa cópia local que pode sumir. O export JSON aqui é pra '
+      + 'mover entre projetos Supabase (staging → produção) ou como snapshot pontual, '
+      + 'não pra proteger contra perda — quem protege é o backup do próprio Supabase.'),
     h('div', { class: 'linha-botoes' },
       h('button', {
         class: 'btn btn--primario',
@@ -390,26 +379,20 @@ export async function viewConfig(params, ctxApp) {
         },
       }, 'Exportar backup (JSON)'),
       h('button', { class: 'btn', onclick: () => inputBackup.click() }, 'Restaurar backup'),
-      h('button', {
-        class: 'btn',
-        onclick: async () => {
-          if (!navigator.storage?.persist) return toast('Navegador não suporta.', 'aviso');
-          const ok = await navigator.storage.persist();
-          toast(ok ? 'Dados marcados como persistentes.' : 'O navegador negou. Instale o app para melhorar a chance.',
-            ok ? 'ok' : 'aviso', 6000);
-        },
-      }, 'Proteger dados'),
       inputBackup),
     ehGestor
       ? h('div', { class: 'zona-perigo' },
         h('strong', {}, 'Zona de perigo'),
+        h('span', { class: 'texto-fraco' },
+          'Apaga o banco Supabase de VERDADE — afeta todos os agentes, em todos os dispositivos, agora.'),
         h('button', {
           class: 'btn btn--perigo btn--mini',
           onclick: async () => {
-            const ok = await confirmar('Apagar TODA a base local',
-              'Isso apaga leads, interações, usinas, empresas, supressão e perfis deste navegador. '
-              + 'Não dá para desfazer. Exporte o backup antes.',
-              { ok: 'Apagar tudo', perigo: true });
+            const ok = await confirmar('Apagar TODOS os dados — de todo mundo, agora',
+              'Isso apaga leads, interações, usinas, empresas, supressão e perfis do banco '
+              + 'Supabase compartilhado — não é uma cópia local, afeta TODA a equipe '
+              + 'imediatamente, em qualquer dispositivo. Não dá pra desfazer. Exporte o backup antes.',
+              { ok: 'Apagar tudo, pra todo mundo', perigo: true });
             if (!ok) return;
             const conf = await perguntar('Confirme digitando', [{
               campo: 'txt', label: 'Digite APAGAR', obrigatorio: true,
@@ -430,12 +413,11 @@ export async function viewConfig(params, ctxApp) {
         + 'oficial de atendimento e reduz a exposição de LGPD.'),
       h('li', {}, h('strong', {}, 'Não raspa Casa dos Dados nem CNPJ Biz. '),
         'Ambos atrás de Cloudflare; scraping quebra ToS. Viram links de pesquisa pontual no cockpit.'),
-      h('li', {}, h('strong', {}, 'Não tem login nem RLS. '),
-        'Sem servidor não há como um agente ser impedido de ler o lead do colega. '
-        + 'A separação por dono aqui é organização, não segurança.'),
-      h('li', {}, h('strong', {}, 'Não sincroniza entre pessoas. '),
-        'Cada navegador tem sua base. Para trabalhar em equipe de verdade é preciso o Supabase '
-        + 'do plano — o schema já está pronto em supabase/migrations/0001_init.sql.'),
+      h('li', {}, h('strong', {}, 'Não tem login nem RLS por usuário — ainda. '),
+        'Os dados já são reais e compartilhados no Supabase (fase 1), mas sem Entra ID '
+        + 'configurado não há como um agente ser impedido de ler o lead do colega: a '
+        + 'publishable key abre tudo, de propósito (ver 0002_fase1_dados_compartilhados.sql). '
+        + 'A separação por dono aqui é organização, não segurança — Entra ID é o próximo passo.'),
       h('li', {}, h('strong', {}, 'Não ingere os 4,6 milhões de linhas da ANEEL. '),
         'Isso é trabalho de ETL fora do navegador. Importe recortes por UF/distribuidora.')));
 

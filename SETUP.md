@@ -1,23 +1,23 @@
 # SETUP.md — o que não cabe em código
 
-Esta é a **versão autocontida** do Lex Prospecta descrito em `PLANO-LEX-PROSPECTA.md`:
-roda inteira no navegador, sem Supabase, sem Entra ID. Banco = IndexedDB local.
-"Login" = escolher/criar um perfil local na primeira vez que abre. Cada
-navegador/dispositivo tem sua própria base — não há sincronização entre pessoas.
-O Vercel entra só como HOSPEDAGEM ESTÁTICA (o repo já vem pronto para isso —
-ver "Deploy no Vercel" abaixo); nada aqui depende das funções server-side dele.
+O front-end é **estático** (sem servidor próprio, sem passo de build — abre
+com qualquer servidor HTTP simples), mas os DADOS são reais: `js/db.js` fala
+com um projeto Supabase de verdade via `@supabase/supabase-js` (vendorado em
+`vendor/`, sem CDN). "Login" ainda é escolher/criar um perfil na primeira vez
+que abre — **ainda não há Entra ID configurado** (isso é fase 2, ver seção
+"RLS e o que falta para autenticação real" abaixo) — mas os leads, toques,
+usinas e empresas já são permanentes e compartilhados entre todos os agentes
+e dispositivos, não uma cópia por navegador.
 
-Isso é uma troca deliberada: zero custo recorrente (o plano original previa
-~US$ 45/mês de Vercel Pro + Supabase Pro) e zero dependência de infraestrutura,
-em troca de não ter RLS de verdade, não ter backup automático e não ter os dados
-compartilhados entre a equipe. Se/quando isso virar dor, o caminho de migração
-está pronto: `supabase/migrations/0001_init.sql` já tem o schema com RLS, e
-`js/db.js` foi escrito para espelhar esse schema campo a campo.
+O Vercel entra só como HOSPEDAGEM ESTÁTICA (o repo já vem pronto pra isso —
+ver "Deploy no Vercel" abaixo); nada aqui depende das funções server-side dele.
 
 ## Rodar localmente
 
-Precisa de um servidor HTTP — módulos ES, IndexedDB e service worker **não
-funcionam** abrindo `index.html` direto (`file://`).
+Precisa de um servidor HTTP — módulos ES e service worker **não funcionam**
+abrindo `index.html` direto (`file://`). Também precisa de `js/supabase-config.js`
+existindo (ver seção seguinte) — sem ele o app mostra "Não consegui iniciar"
+na cara, de propósito, em vez de falhar silenciosamente depois.
 
 ```bash
 cd lex-prospecta
@@ -30,6 +30,42 @@ nginx). Para instalar como PWA de verdade (ícone, standalone, offline), é
 preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 (GitHub Pages, Netlify, Vercel, Cloudflare Pages, um Nginx com Let's Encrypt).
 `localhost` é exceção e funciona em HTTP puro para desenvolvimento.
+
+## Configurar o Supabase (obrigatório — o app não funciona sem isto)
+
+1. **Crie o projeto** em [supabase.com](https://supabase.com) se ainda não tiver
+   um (plano Pro recomendado — seção 4.3 do plano original explica por quê:
+   Free pausa após ~1 semana de inatividade e não tem backup pra download).
+2. **Rode o schema.** Painel do Supabase → **SQL Editor** → New query. Cole o
+   conteúdo INTEIRO de `supabase/migrations/0001_init.sql`, rode. Depois abra
+   uma nova query, cole o conteúdo INTEIRO de
+   `supabase/migrations/0002_fase1_dados_compartilhados.sql`, rode. Nessa
+   ordem — o segundo arquivo ajusta o que o primeiro criou.
+   (Se um dia autenticar o `supabase` CLI: `supabase link --project-ref <ref> && supabase db push`
+   faz os dois de uma vez, na ordem dos nomes dos arquivos.)
+3. **Rode o seed** das concessionárias: cole `supabase/seed.sql` no SQL Editor
+   também. Sem isso `casarConcessionaria()` não tem o que casar — o app ainda
+   funciona (fail-open, guarda em `concessionaria_raw`), só fica sem os
+   nomes canônicos até você rodar isto.
+4. **Pegue a URL e a chave.** Painel → Project Settings → API. `Project URL` é
+   `https://<ref>.supabase.co`. A chave é a **anon/public** (ou, na
+   nomenclatura nova do Supabase, a que começa com `sb_publishable_...`) —
+   **nunca** a `service_role`/`secret`.
+5. **Crie `js/supabase-config.js`** (copie de `supabase-config.example.js`) e
+   preencha os dois valores. Esse arquivo é gitignored — não por ser segredo
+   (a publishable key é pública por design, vai no bundle do navegador de
+   qualquer forma), mas porque cada ambiente (seu teste, a produção da
+   equipe) aponta pra um projeto Supabase diferente.
+6. **Se for publicar no Vercel via `vercel deploy`**: o `.vercelignore` do
+   repo já foi ajustado pra NÃO pular `supabase-config.js` (por padrão o
+   Vercel CLI cai no `.gitignore` quando não há `.vercelignore`, e isso
+   deixaria o app publicado sem conexão nenhuma — já resolvido, só não
+   remova o `.vercelignore`).
+7. **Se o domínio do seu projeto Supabase mudar** (novo projeto, por exemplo),
+   atualize o `connect-src` da CSP em DOIS lugares: `index.html` (a `<meta
+   http-equiv="Content-Security-Policy">`) e `vercel.json`. Esquecer um dos
+   dois faz a CSP bloquear silenciosamente a conexão só em produção (ou só
+   em dev) — sintoma confuso, causa simples.
 
 ## Gerar os ícones de novo
 
@@ -95,70 +131,65 @@ deixou de ser 100% autocontido nessa peça específica.
 
 ## Backup
 
-Sem servidor, não existe backup diário automático (o Supabase Pro do plano
-original tinha). O substituto é manual: **Config → Backup e armazenamento →
-Exportar backup**, que baixa um JSON com todas as tabelas. Faça isso ao fim do
-dia, ou antes de qualquer operação arriscada ("Apagar tudo", restaurar outro
-backup). Restaurar aceita "substituir" ou "mesclar".
+Os dados vivem no Supabase agora — plano Pro faz backup diário automático,
+isso não é mais responsabilidade do app. **Config → Backup e armazenamento →
+Exportar backup** ainda existe, mas serve pra outra coisa: mover dados entre
+projetos Supabase (staging → produção), ou um snapshot pontual antes de uma
+operação arriscada. Não é mais "a única cópia que existe" — é conveniência.
 
-O navegador pode descartar o IndexedDB sob pressão de disco, especialmente se o
-site não estiver instalado como app. Clique em "Proteger dados" (chama
-`navigator.storage.persist()`) — funciona melhor depois de instalado.
+⚠️ O que ISSO significa pra "Apagar tudo" em Config: não apaga uma cópia
+local, apaga o banco Supabase **de verdade**, pra **todos os agentes, em
+todos os dispositivos, imediatamente**. O app avisa isso explicitamente na
+tela — leia o aviso antes de confirmar, não é retórica de segurança padrão.
 
-⚠️ **iOS**: o Safari apaga o storage de um site após 7 dias sem acesso, **a
-menos que esteja instalado na Tela de Início** (`beforeinstallprompt` não existe
-no Safari, então o app mostra um passo a passo manual no primeiro acesso em
-iPhone/iPad). Trate isso como obrigatório, não como sugestão, para quem usa
-iOS.
+Os avisos de iOS sobre o Safari apagar storage local em 7 dias sem instalar
+o PWA na Tela de Início **não se aplicam mais aos dados de negócio** (eles
+não estão no navegador). Ainda vale instalar o app pra melhor experiência
+(ícone, tela cheia), mas não é mais uma questão de perder leads.
 
-## Multiusuário sem servidor — o que isso realmente significa
+## RLS e o que falta para autenticação real
 
-Não há autenticação real nem Row Level Security. "Trocar de perfil" na barra
-superior é uma escolha de UI, não um login: qualquer pessoa com acesso ao
-navegador pode abrir o menu e virar outro agente, inclusive gestor. A separação
-por `owner_id` organiza o trabalho, não protege dado de ninguém. Se isso for um
-problema real (mais de uma pessoa no mesmo dispositivo, ou necessidade de
-auditoria de acesso), a resposta certa é migrar para Supabase com Entra ID —
-não tentar remendar autenticação no cliente.
+`supabase/migrations/0002_fase1_dados_compartilhados.sql` deixa Row Level
+Security **ligada** (o Security Advisor do Supabase não reclama de tabela
+exposta) mas com políticas **abertas** pra `anon`/`authenticated` — a
+publishable key acessa e edita qualquer linha de qualquer tabela. Isso não é
+uma chave vazando (ela é pública por design, vai no bundle do navegador de
+qualquer forma) — é a MESMA ausência de isolamento por usuário que a versão
+100% local já tinha, só que agora sobre dado compartilhado e permanente em
+vez de uma cópia por navegador. "Trocar de perfil" na barra superior continua
+sendo escolha de UI, não login: qualquer pessoa com a URL do app pode virar
+qualquer agente, inclusive gestor.
 
-## Migrar para o Supabase do plano original
+Isso é fase 1, documentado, não escondido. Fase 2 — real Entra ID (seção 5.6
+do plano original) — exige: app registrado no Azure AD como single-tenant,
+Azure Tenant URL travada em `https://login.microsoftonline.com/<tenant-id>`
+(sem isso o `/common` padrão do Supabase aceita qualquer conta Microsoft do
+mundo), claim `xms_edov` no manifest, SMTP próprio (o embutido do Supabase
+manda só 2 e-mails/hora), Custom Access Token Hook pro papel viajar no JWT, e
+então **substituir as políticas abertas de 0002 por políticas reais** (como
+as que `0001_init.sql` já tem escritas — usam `auth.uid()`/`is_gestor()`,
+foram desenhadas pra isso desde o início, só não foram ativadas porque
+dependem de login de verdade existir). Nada disso dá pra fazer numa sessão de
+agente — precisa do tenant Azure AD de vocês e de um fluxo OAuth interativo
+no navegador de alguém com permissão de admin.
 
-O schema em `supabase/migrations/0001_init.sql` e o seed em `supabase/seed.sql`
-já são o Postgres real — RLS incluído. Para ativar:
-
-1. Criar projeto Supabase (Pro — ver seção 4.3 do plano sobre por que Free não
-   serve para uso de equipe: pausa após ~1 semana de inatividade e não tem
-   backup para download).
-2. `supabase link --project-ref <ref> && supabase db push --include-seed`.
-3. Configurar Entra ID como provider (seção 5.6 do plano): app single-tenant,
-   Azure Tenant URL travada em `https://login.microsoftonline.com/<tenant-id>`
-   (sem isso o `/common` padrão aceita qualquer conta Microsoft do mundo),
-   claim `xms_edov` no manifest, Before User Created Hook restringindo ao
-   domínio corporativo, SMTP próprio (o embutido do Supabase manda só 2
-   e-mails/hora).
-4. Configurar o Custom Access Token Hook para o papel viajar no JWT (é o que
-   torna a policy `is_gestor()` rápida — sem ele, RLS consulta a tabela de
-   perfis em toda linha).
-5. Escrever a camada de rede em `js/db.js`: hoje toda função ali fala com
-   IndexedDB; a versão Supabase troca essas chamadas por `@supabase/supabase-js`
-   mantendo a mesma assinatura de função — o resto do app (views, cockpit,
-   ui.js) não precisa mudar, porque não conhece o banco por trás.
-6. Rodar o Security Advisor do Supabase antes de qualquer go-live. Checklist de
-   armadilhas de RLS está na seção 5.5 do plano.
-
-Redirect URIs do OAuth precisam ser atualizados **nos dois lados** (Entra e
-Supabase → Auth → URL Configuration) sempre que o domínio mudar — é o bug mais
-comum de callback quebrado.
+Quando o Entra ID acontecer: rodar o Security Advisor do Supabase antes de
+qualquer go-live (checklist de armadilhas de RLS na seção 5.5 do plano
+original), e lembrar que redirect URIs do OAuth precisam ser atualizados
+**nos dois lados** (Entra e Supabase → Auth → URL Configuration) sempre que o
+domínio mudar — é o bug mais comum de callback quebrado.
 
 ## Segurança — o que já está feito e o que fica com quem hospeda
 
 **Já no código, testado:**
 - **CSP** via `<meta>` em `index.html` (funciona em qualquer host estático,
   mesmo sem controle de headers) — `script-src 'self'`, sem inline, sem `eval`.
-  `connect-src` só libera os dois destinos reais do enriquecimento (OpenCNPJ,
+  `connect-src` só libera os três destinos reais (Supabase, OpenCNPJ,
   BrasilAPI); qualquer outro `fetch` é bloqueado pelo próprio navegador —
   verificado na prática (um `fetch` de teste para `example.com` foi recusado
-  pela CSP, os dois de verdade passaram).
+  pela CSP, os três de verdade passaram, e uma query real contra o Supabase
+  do projeto — antes até da migration existir — voltou o erro esperado do
+  Postgres, não um bloqueio de CSP).
 - **Sem `innerHTML` em lugar nenhum do app.** `h()` (o helper que monta toda a
   UI) nunca aceita HTML bruto — só `createTextNode`/`setAttribute`. Dado
   importado (CSV/XLSX/colagem, a fonte menos confiável do app) não tem como
@@ -224,28 +255,34 @@ QR code do WhatsApp pessoal do agente.
 
 ```
 lex-prospecta/
-├─ index.html            # shell da página, monta js/app.js — inclui a CSP
-├─ manifest.webmanifest   # PWA
-├─ sw.js                 # service worker "Nível 0" — hand-rolled, sem build step
-├─ vercel.json            # headers de segurança + cache para deploy real
-├─ package.json           # só pra `npm test` — zero dependência de runtime
+├─ index.html                      # shell da página — inclui a CSP e o <script> do vendor
+├─ manifest.webmanifest             # PWA
+├─ sw.js                           # service worker "Nível 0" — hand-rolled, sem build step
+├─ vercel.json                      # headers de segurança + cache para deploy real
+├─ .vercelignore                    # garante que supabase-config.js VAI no deploy (ao contrário do git)
+├─ package.json                     # só pra `npm test` — zero dependência de runtime
 ├─ css/app.css
+├─ vendor/
+│  └─ supabase-js-2.112.3.umd.js    # supabase-js vendorado — mantém CSP script-src 'self'
 ├─ js/
-│  ├─ app.js             # bootstrap, shell, roteamento
-│  ├─ db.js              # camada de dados (IndexedDB espelhando o Postgres)
-│  ├─ util.js            # normalização, CSV, formatação, urlSegura, dataLocal
-│  ├─ seed.js            # vocabulário controlado (status, canais, concessionárias)
-│  ├─ parse.js           # colar/CSV/XLSX → matriz de linhas
-│  ├─ aneel.js            # links diretos, leitor de ZIP em streaming, extração SIGA
-│  ├─ enriquecer.js       # adaptador OpenCNPJ + fallback
-│  ├─ exporta.js          # CSV e relatório de impressão
-│  ├─ ui.js               # primitivas de interface
-│  └─ views/              # uma tela por arquivo (inclui conversas.js)
-├─ icons/                 # ícones do PWA + gerador Python
-├─ etl/amostras/          # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
-├─ test/                  # node --test — cobre util/parse/aneel contra dado real
+│  ├─ app.js                       # bootstrap, shell, roteamento
+│  ├─ db.js                        # camada de dados — fala com Supabase de verdade
+│  ├─ supabase-config.js            # gitignored — URL + publishable key deste ambiente
+│  ├─ supabase-config.example.js    # template committado
+│  ├─ util.js                      # normalização, CSV, formatação, urlSegura, dataLocal
+│  ├─ seed.js                      # vocabulário controlado (status, canais, concessionárias)
+│  ├─ parse.js                     # colar/CSV/XLSX → matriz de linhas
+│  ├─ aneel.js                      # links diretos, leitor de ZIP em streaming, extração SIGA
+│  ├─ enriquecer.js                 # adaptador OpenCNPJ + fallback
+│  ├─ exporta.js                    # CSV e relatório de impressão
+│  ├─ ui.js                         # primitivas de interface
+│  └─ views/                        # uma tela por arquivo (inclui conversas.js)
+├─ icons/                           # ícones do PWA + gerador Python
+├─ etl/amostras/                    # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
+├─ test/                            # node --test — cobre util/parse/aneel contra dado real
 ├─ supabase/
-│  ├─ migrations/0001_init.sql   # o schema Postgres de referência
-│  └─ seed.sql                    # concessionárias
+│  ├─ migrations/0001_init.sql      # schema completo — RLS com auth.uid()/is_gestor(), pronta pra fase 2
+│  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta pra rodar sem Entra ID (fase 1, atual)
+│  └─ seed.sql                       # concessionárias
 └─ doc/LIA-legitimo-interesse.md
 ```

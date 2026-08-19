@@ -8,7 +8,7 @@
 // que fica sem dependência nenhuma. Se a versão Next.js do plano nascer depois,
 // troca por `@serwist/turbopack` sem mudar o contrato de cache abaixo.
 
-const VERSAO = 'lex-prospecta-v2';
+const VERSAO = 'lex-prospecta-v3';
 const CACHE_SHELL = `${VERSAO}-shell`;
 
 const ARQUIVOS_SHELL = [
@@ -16,6 +16,8 @@ const ARQUIVOS_SHELL = [
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
+  './vendor/supabase-js-2.112.3.umd.js',
+  './js/supabase-config.js',
   './js/app.js',
   './js/util.js',
   './js/seed.js',
@@ -89,10 +91,10 @@ async function respostaEstatico(req) {
 
 self.addEventListener('fetch', (ev) => {
   const req = ev.request;
-  if (req.method !== 'GET') return; // POST/PUT (ex.: enriquecimento) sempre vai direto à rede
+  if (req.method !== 'GET') return; // POST/PATCH (Supabase, enriquecimento de CNPJ) sempre vai direto à rede
 
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return; // OpenCNPJ/BrasilAPI: não interceptar
+  if (url.origin !== self.location.origin) return; // Supabase/OpenCNPJ/BrasilAPI: não interceptar
 
   if (req.mode === 'navigate') {
     ev.respondWith(respostaNavegacao(req));

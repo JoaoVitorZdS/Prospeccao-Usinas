@@ -55,8 +55,9 @@ function pedirPerfil(existentes) {
       corpo: h('div', {},
         !existentes.length
           ? h('p', { class: 'texto' },
-            'Esta é a versão autocontida: roda inteira no seu navegador, sem servidor e sem login. '
-            + 'Diga quem você é para que os leads e os toques fiquem com autoria.')
+            'Os dados ficam no Supabase da equipe, compartilhados entre todos os agentes — '
+            + 'ainda sem login de verdade, então diga quem você é para que os leads e os '
+            + 'toques fiquem com autoria.')
           : null,
         h('div', { class: 'form' },
           h('label', { class: 'campo' }, h('span', {}, 'Nome'), nome),
@@ -216,7 +217,7 @@ async function boot() {
   if (location.protocol === 'file:') {
     document.body.replaceChildren(h('div', { class: 'erro-fatal' },
       h('h1', {}, 'Abra por um servidor local'),
-      h('p', {}, 'Módulos ES, IndexedDB e service worker não funcionam em file://.'),
+      h('p', {}, 'Módulos ES e service worker não funcionam em file://.'),
       h('pre', {}, 'cd lex-prospecta\npython3 -m http.server 8080\n\n→ http://localhost:8080')));
     return;
   }
@@ -288,5 +289,7 @@ boot().catch((e) => {
     h('h1', {}, 'Não consegui iniciar'),
     h('p', {}, e.message),
     h('p', { class: 'texto-fraco' },
-      'Se o navegador estiver em janela anônima, o IndexedDB pode estar bloqueado.')));
+      'Cause comuns: js/supabase-config.js não existe ou está com URL/chave erradas '
+      + '(copie de supabase-config.example.js), o vendor/supabase-js-*.umd.js não carregou, '
+      + 'ou a CSP está bloqueando a conexão com o Supabase — confira o console.')));
 });
