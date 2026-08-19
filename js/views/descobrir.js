@@ -31,8 +31,9 @@ export async function viewDescobrir(params, ctxApp) {
       cabecalhoPagina('Descobrir', 'Explorador sobre a base da ANEEL'),
       vazio(
         'Nenhuma usina carregada ainda',
-        'Importe um recorte da base de Geração Distribuída da ANEEL (CSV) pela tela Importar, '
-        + 'aba "Base da ANEEL". Recorte por UF/distribuidora — não precisa dos 4,6 milhões de linhas.',
+        'Vá em Importar → Base da ANEEL: baixe pelo link direto e arraste o arquivo (o ZIP da GD '
+        + 'é lido em streaming, sem travar a aba) ou clique em "Testar com amostra real" pra ver '
+        + 'o fluxo funcionando sem baixar nada.',
         h('div', { class: 'linha-botoes' },
           h('button', { class: 'btn btn--primario', onclick: () => navegar('importar', { modo: 'aneel' }) },
             'Ir para Importar'),
@@ -123,7 +124,7 @@ export async function viewDescobrir(params, ctxApp) {
     return h('label', { class: 'chk' }, i, rot);
   };
 
-  const busca = h('input', { type: 'search', class: 'busca', placeholder: 'Razão social, CNPJ ou município…' });
+  const busca = h('input', { type: 'search', class: 'busca', placeholder: 'Razão social, CNPJ ou município…', 'aria-label': 'Buscar empresas' });
   busca.addEventListener('input', debounce(() => { filtro.texto = busca.value; desenhar(); }, 250));
 
   const painelFiltros = card(null,

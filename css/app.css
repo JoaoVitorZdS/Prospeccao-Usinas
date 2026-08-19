@@ -466,7 +466,12 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acento); ou
 
 @media (max-width: 760px) {
   .topo { flex-wrap: wrap; height: auto; padding: 10px 14px; gap: 10px; }
-  .nav { order: 3; width: 100%; }
+  /* .nav tem `flex:1` no desktop (regra base) — com flex-basis:0% ele nunca
+     "não cabe" de verdade, então nunca quebrava de linha: só espremia pra
+     ~50px e o overflow-x:auto da regra base virava um scroll horizontal
+     invisível (sem seta, sem sinal nenhum) escondendo 6 das 7 abas. */
+  .nav { order: 3; flex: 0 0 100%; width: 100%; flex-wrap: wrap; overflow-x: visible; gap: 6px; }
+  .nav__item { flex: 0 0 auto; }
   #conteudo { padding: 14px; }
   .drawer { max-width: 100% !important; }
   .link-linha { grid-template-columns: auto 1fr; }

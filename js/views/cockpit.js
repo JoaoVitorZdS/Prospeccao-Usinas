@@ -135,7 +135,7 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
           atual.opt_out ? badge('OPT-OUT', 'vermelho') : null)),
       h('div', { class: 'cockpit__navfila' },
         fila.length > 1 ? h('span', { class: 'cockpit__pos' }, `${indice + 1} / ${fila.length}`) : null,
-        h('button', { class: 'btn-icone', title: 'Fechar (Esc)', onclick: fecharDrawer }, '×')));
+        h('button', { class: 'btn-icone', title: 'Fechar (Esc)', 'aria-label': 'Fechar cockpit', onclick: fecharDrawer }, '×')));
 
     /* ── Faixa de fatos ── */
     const fato = (rot, val, dica) => h('div', { class: 'fato', title: dica || '' },

@@ -148,7 +148,7 @@ export async function viewConversas(params, ctxApp) {
           })()
           : null,
         (() => {
-          const i = h('input', { type: 'search', class: 'busca', placeholder: 'Buscar por nome ou conteúdo…', value: estado.texto });
+          const i = h('input', { type: 'search', class: 'busca', placeholder: 'Buscar por nome ou conteúdo…', 'aria-label': 'Buscar conversas', value: estado.texto });
           i.addEventListener('input', debounce(() => { estado.texto = i.value.trim(); desenhar(); }, 220));
           return i;
         })()));
