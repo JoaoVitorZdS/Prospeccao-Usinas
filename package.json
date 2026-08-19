@@ -1,0 +1,12 @@
+{
+  "name": "lex-prospecta",
+  "private": true,
+  "version": "1.0.0",
+  "description": "PWA autônomo de prospecção de usinas de geração distribuída. Sem dependências de runtime — este package.json existe só para o `npm test` de desenvolvimento.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "start": "python3 -m http.server 8080"
+  },
+  "dependencies": {}
+}

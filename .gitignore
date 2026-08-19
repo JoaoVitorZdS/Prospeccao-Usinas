@@ -1,0 +1,12 @@
+# Segredos e config local — nunca commitar
+.env
+.env.local
+.env.*.local
+js/supabase-config.js
+
+# SO / editor
+.DS_Store
+*.log
+
+# Node (não há build, mas por precaução)
+node_modules/
