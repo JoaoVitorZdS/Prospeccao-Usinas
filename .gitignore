@@ -1,8 +1,13 @@
-# Segredos e config local — nunca commitar
+# Segredos de verdade — nunca commitar (chave service_role, senhas, etc.)
 .env
 .env.local
 .env.*.local
-js/supabase-config.js
+
+# js/supabase-config.js NÃO está aqui de propósito: a publishable key é
+# pública por design (protegida por RLS, não por estar escondida) e o app é
+# estático sem passo de build — sem commitar este arquivo, deploy via GitHub
+# integration (Vercel clona do git, não do disco local) publica o app sem
+# conexão nenhuma. Ver SETUP.md.
 
 # SO / editor
 .DS_Store

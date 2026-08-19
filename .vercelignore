@@ -1,9 +1,7 @@
-# Por padrão, `vercel deploy` usa o .gitignore como filtro quando não existe
-# .vercelignore. Isso excluiria js/supabase-config.js do deploy (ele está no
-# .gitignore de propósito, pra nunca ir pro git) — e o app publicado ficaria
-# sem conexão com o Supabase. Este arquivo troca esse fallback: repete as
-# exclusões do .gitignore que fazem sentido pro deploy, mas NÃO exclui
-# supabase-config.js — ele precisa estar no pacote enviado ao Vercel.
+# js/supabase-config.js agora é committado (não está mais no .gitignore),
+# então isto não precisa mais forçar sua inclusão — mantido só pelas
+# exclusões abaixo, caso alguém publique via `vercel deploy` direto do disco
+# em vez de deploy pelo GitHub.
 
 .DS_Store
 *.log

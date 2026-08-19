@@ -36,13 +36,17 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 1. **Crie o projeto** em [supabase.com](https://supabase.com) se ainda não tiver
    um (plano Pro recomendado — seção 4.3 do plano original explica por quê:
    Free pausa após ~1 semana de inatividade e não tem backup pra download).
-2. **Rode o schema.** Painel do Supabase → **SQL Editor** → New query. Cole o
-   conteúdo INTEIRO de `supabase/migrations/0001_init.sql`, rode. Depois abra
-   uma nova query, cole o conteúdo INTEIRO de
-   `supabase/migrations/0002_fase1_dados_compartilhados.sql`, rode. Nessa
-   ordem — o segundo arquivo ajusta o que o primeiro criou.
+2. **Rode as migrations, em ordem.** Painel do Supabase → **SQL Editor** →
+   New query. Cole e rode, uma de cada vez, nesta ordem exata (cada uma
+   ajusta o que a anterior criou):
+   `0001_init.sql` → `0002_fase1_dados_compartilhados.sql` →
+   `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql`.
+   As duas últimas existem porque `empresa`/`lead` ganharam campos (enriquecimento
+   de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
+   `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
+   Descobrir falha com "column not found".
    (Se um dia autenticar o `supabase` CLI: `supabase link --project-ref <ref> && supabase db push`
-   faz os dois de uma vez, na ordem dos nomes dos arquivos.)
+   roda todas de uma vez, na ordem dos nomes dos arquivos.)
 3. **Rode o seed** das concessionárias: cole `supabase/seed.sql` no SQL Editor
    também. Sem isso `casarConcessionaria()` não tem o que casar — o app ainda
    funciona (fail-open, guarda em `concessionaria_raw`), só fica sem os
@@ -51,17 +55,19 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    `https://<ref>.supabase.co`. A chave é a **anon/public** (ou, na
    nomenclatura nova do Supabase, a que começa com `sb_publishable_...`) —
    **nunca** a `service_role`/`secret`.
-5. **Crie `js/supabase-config.js`** (copie de `supabase-config.example.js`) e
-   preencha os dois valores. Esse arquivo é gitignored — não por ser segredo
-   (a publishable key é pública por design, vai no bundle do navegador de
-   qualquer forma), mas porque cada ambiente (seu teste, a produção da
-   equipe) aponta pra um projeto Supabase diferente.
-6. **Se for publicar no Vercel via `vercel deploy`**: o `.vercelignore` do
-   repo já foi ajustado pra NÃO pular `supabase-config.js` (por padrão o
-   Vercel CLI cai no `.gitignore` quando não há `.vercelignore`, e isso
-   deixaria o app publicado sem conexão nenhuma — já resolvido, só não
-   remova o `.vercelignore`).
-7. **Se o domínio do seu projeto Supabase mudar** (novo projeto, por exemplo),
+5. **`js/supabase-config.js` já está no repo, committado**, apontando pro
+   projeto real da equipe. Isso é deliberado, não descuido: a publishable
+   key é pública por design (quem protege é o RLS, não o sigilo dela — ver
+   seção "RLS e o que falta para autenticação real"), e o app não tem passo
+   de build pra injetar variável de ambiente. Se você commitasse via
+   `.gitignore` como uma "config local", o deploy no Vercel por integração
+   com GitHub (o caminho mais comum — Vercel clona do git, não lê o disco de
+   quem programou) publicaria o app **sem conexão nenhuma** — foi exatamente
+   isso que aconteceu na primeira tentativa de deploy, com um 404 em
+   `js/supabase-config.js`. Se quiser apontar pra outro projeto (um Supabase
+   de teste separado, por exemplo), edite este arquivo direto ou copie
+   `supabase-config.example.js` como referência.
+6. **Se o domínio do seu projeto Supabase mudar** (novo projeto, por exemplo),
    atualize o `connect-src` da CSP em DOIS lugares: `index.html` (a `<meta
    http-equiv="Content-Security-Policy">`) e `vercel.json`. Esquecer um dos
    dois faz a CSP bloquear silenciosamente a conexão só em produção (ou só
@@ -259,7 +265,7 @@ lex-prospecta/
 ├─ manifest.webmanifest             # PWA
 ├─ sw.js                           # service worker "Nível 0" — hand-rolled, sem build step
 ├─ vercel.json                      # headers de segurança + cache para deploy real
-├─ .vercelignore                    # garante que supabase-config.js VAI no deploy (ao contrário do git)
+├─ .vercelignore                    # exclusões extras só pra `vercel deploy` direto do disco
 ├─ package.json                     # só pra `npm test` — zero dependência de runtime
 ├─ css/app.css
 ├─ vendor/
@@ -267,8 +273,8 @@ lex-prospecta/
 ├─ js/
 │  ├─ app.js                       # bootstrap, shell, roteamento
 │  ├─ db.js                        # camada de dados — fala com Supabase de verdade
-│  ├─ supabase-config.js            # gitignored — URL + publishable key deste ambiente
-│  ├─ supabase-config.example.js    # template committado
+│  ├─ supabase-config.js            # COMMITTADO — URL + publishable key real da equipe (não é segredo)
+│  ├─ supabase-config.example.js    # template, pra quem quiser apontar pra outro projeto
 │  ├─ util.js                      # normalização, CSV, formatação, urlSegura, dataLocal
 │  ├─ seed.js                      # vocabulário controlado (status, canais, concessionárias)
 │  ├─ parse.js                     # colar/CSV/XLSX → matriz de linhas
@@ -281,8 +287,10 @@ lex-prospecta/
 ├─ etl/amostras/                    # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
 ├─ test/                            # node --test — cobre util/parse/aneel contra dado real
 ├─ supabase/
-│  ├─ migrations/0001_init.sql      # schema completo — RLS com auth.uid()/is_gestor(), pronta pra fase 2
+│  ├─ migrations/0001_init.sql      # schema base — RLS com auth.uid()/is_gestor(), pronta pra fase 2
 │  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta pra rodar sem Entra ID (fase 1, atual)
+│  ├─ migrations/0003_colunas_faltantes.sql            # colunas de empresa que 0001 não previu
+│  ├─ migrations/0004_lead_razao_social.sql            # idem, pra lead
 │  └─ seed.sql                       # concessionárias
 └─ doc/LIA-legitimo-interesse.md
 ```
