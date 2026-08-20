@@ -13,7 +13,7 @@
 // majoritariamente contábil/fiscal, não do decisor. É canal secundário.
 
 import { normCnpj, normFone, normEmail, parseNum, parseData, dorme } from './util.js';
-import { get, put, todos, upsertEmpresa, carregarSupressao, percorrer } from './db.js';
+import { get, put, todos, upsertEmpresa, carregarSupressao, percorrer, contar, buscarTop } from './db.js';
 
 /* ═══════════════ Provedores ═══════════════ */
 
@@ -239,25 +239,44 @@ export async function processarFila(cnpjs, { onProgresso, sinal } = {}) {
 /**
  * Taxa de preenchimento — é o número que decide se vale contratar fonte paga
  * (critério de verificação da fase 2 no plano).
+ *
+ * Antes buscava `todos('empresa')` — a tabela inteira — só pra contar. Numa
+ * base de centenas de milhares de linhas isso sozinho já eram centenas de
+ * requisições. `contar()` com filtro faz o Postgres contar, sem trazer as
+ * linhas pro navegador; só o "por fonte" (que precisa dos valores, não só a
+ * contagem) usa uma amostra limitada em vez da tabela inteira — é uma
+ * estimativa diagnóstica ("qual fonte tá sendo mais usada"), não precisa ser
+ * exaustiva.
  */
 export async function taxaPreenchimento() {
-  const lista = await todos('empresa');
-  const enriquecidas = lista.filter((e) => e.enriquecido_em);
-  const comTel = enriquecidas.filter((e) => e.telefone1).length;
-  const comMail = enriquecidas.filter((e) => e.email).length;
+  const [totalEmpresas, enriquecidasN, comTel, comMail] = await Promise.all([
+    contar('empresa'),
+    contar('empresa', (q) => q.not('enriquecido_em', 'is', null)),
+    contar('empresa', (q) => q.not('enriquecido_em', 'is', null).not('telefone1', 'is', null)),
+    contar('empresa', (q) => q.not('enriquecido_em', 'is', null).not('email', 'is', null)),
+  ]);
+
+  const amostra = await buscarTop('empresa', {
+    colunas: 'fonte_enriquecimento',
+    ordenarPor: 'enriquecido_em',
+    limite: 3000,
+    filtro: (q) => q.not('enriquecido_em', 'is', null),
+  });
   const porFonte = {};
-  for (const e of enriquecidas) {
+  for (const e of amostra) {
     const f = e.fonte_enriquecimento || 'desconhecida';
     porFonte[f] = (porFonte[f] || 0) + 1;
   }
+
   return {
-    empresas: lista.length,
-    enriquecidas: enriquecidas.length,
-    pendentes: lista.length - enriquecidas.length,
+    empresas: totalEmpresas,
+    enriquecidas: enriquecidasN,
+    pendentes: totalEmpresas - enriquecidasN,
     comTelefone: comTel,
     comEmail: comMail,
-    pctTelefone: enriquecidas.length ? comTel / enriquecidas.length : 0,
-    pctEmail: enriquecidas.length ? comMail / enriquecidas.length : 0,
+    pctTelefone: enriquecidasN ? comTel / enriquecidasN : 0,
+    pctEmail: enriquecidasN ? comMail / enriquecidasN : 0,
     porFonte,
+    porFonteAmostra: amostra.length < enriquecidasN,
   };
 }

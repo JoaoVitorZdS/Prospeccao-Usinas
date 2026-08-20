@@ -135,6 +135,49 @@ paga exigir chave, a chamada precisa sair do navegador (a chave não pode viver
 em JS público) e vira uma função de borda/servidor — nesse ponto o projeto já
 deixou de ser 100% autocontido nessa peça específica.
 
+## Limites de requisição — por que Descobrir nunca busca a tabela inteira
+
+Depois que a equipe importou um recorte grande da ANEEL (centenas de milhares
+de linhas em `empresa`), a tela **Descobrir** ficou lenta e martelando o
+Supabase — cada carregamento fazia `todos('empresa')`, que pagina de 1000 em
+1000: numa base de ~180 mil empresas isso é ~180 requisições sequenciais **só
+pra abrir a tela**, repetido toda vez.
+
+Correção, em `js/db.js`:
+
+- **`todos()` ganhou um teto de segurança** (`TETO_PAGINAS_SEGURANCA`, 30 mil
+  linhas) — para de paginar e avisa no console em vez de continuar pra
+  sempre. É uma rede de segurança genérica, não a solução principal.
+- **`buscarTop(loja, { ordenarPor, limite, filtro })`** — busca ordenada e
+  limitada **numa só requisição**. Descobrir usa isto pra pegar só as
+  empresas de maior potência (as mais valiosas comercialmente), em vez da
+  base inteira. ⚠️ O Supabase tem um teto próprio de linhas por requisição
+  (`db-max-rows` do PostgREST, ~1000 por padrão) que vale mesmo pedindo
+  `limite` maior — confirmado testando contra o projeto real. O código nunca
+  assume que pediu N e recebeu N; sempre confere o que voltou de verdade.
+- **UF e distribuidora disparam nova busca no servidor** (`.contains()` na
+  coluna array) quando o filtro muda, em vez de só refiltrar o que já estava
+  carregado — é como o operador alcança qualquer recorte da base sem baixar
+  tudo. Os demais filtros (potência, porte, modalidade, texto) continuam
+  client-side sobre o que já foi carregado.
+- **`empresasPorCnpj(cnpjs)`** — Painel, Fila e Exportar precisavam só do
+  contato/potência dos CNPJs que já viraram lead, não da tabela inteira;
+  trocado de `todos('empresa')` para uma busca `.in('cnpj', [...])` nesses
+  CNPJs específicos.
+- **`agregarEmpresas()` continua sem teto**, de propósito — usa `percorrer()`
+  (que não tem o teto de `todos()`) porque precisa ver TODA `usina_aneel`/
+  `empresa` pra agregar corretamente; truncar aqui perderia telefone/e-mail
+  já enriquecido de quem ficasse de fora do corte.
+- **`putMuitos` foi de lotes de 500 pra 2000** — reduz em ~4× o número de
+  requisições de um import grande (confirmado: 5.000 linhas em 3
+  requisições, ~5s).
+
+Testado contra o projeto real inserindo 5.000 linhas sintéticas por cima das
+~180 mil reais (limpo depois, contagem conferida antes e depois pra garantir
+que nada real foi apagado): busca ordenada em 1 requisição, filtro por UF
+batendo com a contagem real, `taxaPreenchimento()` respondendo em <0,5s via
+`contar()` em vez de baixar a tabela.
+
 ## Backup
 
 Os dados vivem no Supabase agora — plano Pro faz backup diário automático,

@@ -12,7 +12,7 @@ import {
 } from '../util.js';
 import { UFS, TIPOS_GERACAO } from '../seed.js';
 import {
-  todos, buscarLeads, criarLead, carregarSupressao, contar, agregarEmpresas,
+  todos, buscarTop, buscarLeads, criarLead, carregarSupressao, contar, agregarEmpresas,
 } from '../db.js';
 import {
   cabecalhoPagina, tabela, vazio, toast, kpi, badge, perguntar, confirmar, barraProgresso, card,
@@ -46,8 +46,16 @@ export async function viewDescobrir(params, ctxApp) {
     return raiz;
   }
 
-  const [empresas, concessionarias] = await Promise.all([todos('empresa'), todos('concessionaria')]);
+  // Nunca mais que isto NUMA SÓ REQUISIÇÃO, não importa o tamanho da base —
+  // é a diferença entre 1 chamada ao Supabase e ~360 (base de 360 mil linhas
+  // paginando de 1000 em 1000). UF e distribuidora reconsultam o servidor
+  // quando mudam (abaixo); os outros filtros continuam client-side sobre o
+  // que já foi carregado — ver aviso na tela quando o corte está truncado.
+  const TETO_CARGA = 3000;
+
+  const concessionarias = await todos('concessionaria');
   const mapaConc = new Map(concessionarias.map((c) => [c.codigo, c.nome]));
+  const totalEmpresas = await contar('empresa');
   const leadsAtivos = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
   const supressao = await carregarSupressao();
 
@@ -58,18 +66,51 @@ export async function viewDescobrir(params, ctxApp) {
   };
   const selecao = new Set();
 
-  /* opções derivadas do que existe na base, não de lista fixa */
+  let empresas = [];
+  let truncado = false;
+  let totalFiltrado = totalEmpresas;
+
+  /* UF/distribuidora vêm de fonte COMPLETA (lista fixa / tabela de referência),
+     não do que foi carregado — senão sumiriam opções que só existem fora do
+     recorte atual dos 3 mil. Os outros filtros continuam derivados do
+     carregado: são refinamento fino, não a ferramenta de "achar o resto". */
+  const opcUF = UFS.slice();
+  const opcConc = concessionarias.map((c) => c.codigo).sort();
+  const opcGer = Object.keys(TIPOS_GERACAO);
+  let opcPorte = [], opcModal = [], opcFase = [];
+
   const opcoesDe = (extrair) => {
     const s = new Set();
     for (const e of empresas) for (const v of [].concat(extrair(e) || [])) if (v) s.add(v);
     return [...s].sort();
   };
-  const opcConc = opcoesDe((e) => e.distribuidoras);
-  const opcPorte = opcoesDe((e) => e.portes);
-  const opcModal = opcoesDe((e) => e.modalidades);
-  const opcFase = opcoesDe((e) => e.fases);
-  const opcGer = opcoesDe((e) => e.tipos_geracao);
-  const opcUF = opcoesDe((e) => e.ufs).filter((u) => UFS.includes(u));
+
+  /**
+   * Só isto fala com o Supabase pra buscar `empresa` — sempre ordenado, sempre
+   * limitado. `truncado` é calculado a partir do que REALMENTE voltou, não do
+   * que foi pedido: o Supabase tem um teto próprio de linhas por requisição
+   * (`db-max-rows`, tipicamente 1000) que já vale mesmo pedindo `limite` maior
+   * — confirmado testando contra o projeto real. Assumir que `.limit(N)`
+   * sempre entrega N seria mostrar "sem corte" quando na verdade cortou.
+   */
+  async function recarregar() {
+    const filtroServidor = (q) => {
+      if (filtro.uf) q = q.contains('ufs', [filtro.uf]);
+      if (filtro.conc) q = q.contains('distribuidoras', [filtro.conc]);
+      return q;
+    };
+    const [carregadas, totalDoFiltro] = await Promise.all([
+      buscarTop('empresa', { ordenarPor: 'potencia_total_kw', limite: TETO_CARGA, filtro: filtroServidor }),
+      (filtro.uf || filtro.conc) ? contar('empresa', filtroServidor) : Promise.resolve(totalEmpresas),
+    ]);
+    empresas = carregadas;
+    totalFiltrado = totalDoFiltro;
+    truncado = empresas.length < totalFiltrado;
+    opcPorte = opcoesDe((e) => e.portes);
+    opcModal = opcoesDe((e) => e.modalidades);
+    opcFase = opcoesDe((e) => e.fases);
+  }
+  await recarregar();
 
   function aplicar() {
     const f = filtro;
@@ -77,6 +118,8 @@ export async function viewDescobrir(params, ctxApp) {
     const max = f.potMax === '' ? null : Number(f.potMax);
     const q = f.texto.trim().toLowerCase();
     return empresas.filter((e) => {
+      // uf/conc já vieram filtrados do servidor (recarregar) — os testes
+      // abaixo são só uma rede de segurança, não fazem trabalho de verdade
       if (f.uf && !(e.ufs || []).includes(f.uf)) return false;
       if (f.conc && !(e.distribuidoras || []).includes(f.conc)) return false;
       if (f.geracao && !(e.tipos_geracao || []).includes(f.geracao)) return false;
@@ -101,11 +144,22 @@ export async function viewDescobrir(params, ctxApp) {
   }
 
   /* ── Controles ── */
-  const sel = (rot, opcoes, chave, formatar) => {
+  /** `remoto: true` (UF/distribuidora) reconsulta o servidor — os outros filtros
+   * só refiltram o que já está carregado, sem nova requisição. */
+  const sel = (rot, opcoes, chave, formatar, remoto) => {
     const s = h('select', {},
       h('option', { value: '' }, `${rot}: todas`),
       opcoes.map((o) => h('option', { value: o }, formatar ? formatar(o) : o)));
-    s.addEventListener('change', () => { filtro[chave] = s.value; desenhar(); });
+    s.addEventListener('change', async () => {
+      filtro[chave] = s.value;
+      if (remoto) {
+        s.disabled = true;
+        areaTabela.replaceChildren(h('div', { class: 'carregando' }, 'Buscando…'));
+        try { await recarregar(); } catch (e) { toast(e.message, 'erro', 6000); }
+        s.disabled = false;
+      }
+      desenhar();
+    });
     return h('label', { class: 'campo campo--linha' }, s);
   };
   const num = (rot, chave) => {
@@ -129,8 +183,8 @@ export async function viewDescobrir(params, ctxApp) {
 
   const painelFiltros = card(null,
     h('div', { class: 'filtros' },
-      sel('UF', opcUF, 'uf'),
-      sel('Distribuidora', opcConc, 'conc', (c) => mapaConc.get(c) || c),
+      sel('UF', opcUF, 'uf', null, true),
+      sel('Distribuidora', opcConc, 'conc', (c) => mapaConc.get(c) || c, true),
       sel('Geração', opcGer, 'geracao', (g) => TIPOS_GERACAO[g] || g),
       sel('Porte', opcPorte, 'porte'),
       sel('Modalidade', opcModal, 'modalidade'),
@@ -282,10 +336,8 @@ export async function viewDescobrir(params, ctxApp) {
     toast(`Enriquecidos: ${resumo.ok} · com telefone: ${resumo.comTelefone} · com e-mail: ${resumo.comEmail}`
       + (resumo.erros ? ` · falhas: ${resumo.erros}` : ''), 'ok', 6000);
 
-    // recarrega os agregados alterados
-    const novos = await todos('empresa');
-    empresas.length = 0;
-    empresas.push(...novos);
+    // recarrega os agregados alterados (mesma busca limitada/ordenada de sempre)
+    await recarregar();
     desenhar();
   }
 
@@ -297,7 +349,8 @@ export async function viewDescobrir(params, ctxApp) {
     const naoEnriq = lista.filter((e) => !e.enriquecido_em).length;
 
     areaKpis.replaceChildren(
-      kpi('Empresas no filtro', fmtNum(lista.length), `de ${fmtNum(empresas.length)} na base`),
+      kpi('Empresas no filtro', fmtNum(lista.length),
+        `${fmtNum(empresas.length)} carregadas de ${fmtNum(totalFiltrado)}${(filtro.uf || filtro.conc) ? ' no recorte' : ' na base'}`),
       kpi('Usinas', fmtNum(usinas)),
       kpi('Potência somada', fmtPotencia(potTotal)),
       kpi('Com telefone', fmtNum(comTel), lista.length ? `${Math.round((comTel / lista.length) * 100)}%` : ''),
@@ -306,7 +359,13 @@ export async function viewDescobrir(params, ctxApp) {
     );
 
     const pagina = lista.slice(0, 500);
-    areaTabela.replaceChildren(
+    areaTabela.replaceChildren(...limpar(
+      truncado
+        ? h('p', { class: 'aviso' },
+          `Carregadas as ${fmtNum(empresas.length)} empresas de maior potência (de `
+          + `${fmtNum(totalFiltrado)}${(filtro.uf || filtro.conc) ? ' neste recorte' : ' na base'}) — filtre por `
+          + 'UF ou distribuidora pra buscar outro recorte direto no banco, sem baixar tudo de uma vez.')
+        : null,
       lista.length
         ? h('div', {},
           tabela({
@@ -331,14 +390,14 @@ export async function viewDescobrir(params, ctxApp) {
               disabled: naoEnriq === 0,
             }, `Enriquecer ${Math.min(naoEnriq, 200)} pendentes`)))
         : vazio('Nenhuma empresa neste filtro', 'Afrouxe os filtros ou importe mais um recorte da ANEEL.'),
-    );
+    ));
     atualizarAcoes(lista);
   }
 
   const taxa = await taxaPreenchimento();
   raiz.append(...limpar(
     cabecalhoPagina('Descobrir',
-      `${fmtNum(totalUsinas)} usinas · ${fmtNum(empresas.length)} CNPJs distintos na base local`,
+      `${fmtNum(totalUsinas)} usinas · ${fmtNum(totalEmpresas)} CNPJs distintos na base`,
       h('button', {
         class: 'btn btn--fantasma',
         onclick: async () => {

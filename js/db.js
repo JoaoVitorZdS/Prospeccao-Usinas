@@ -86,11 +86,25 @@ export async function get(loja, chave) {
   return data || undefined;
 }
 
+// Trava de segurança genérica: sem isto, `todos('empresa')` numa base de
+// 360 mil linhas (import sem recorte da ANEEL) dispara ~360 requisições
+// SEQUENCIAIS ao Supabase toda vez que uma tela carrega — lento pro usuário
+// e o jeito mais fácil de estourar o limite de uso do projeto. Isso já
+// aconteceu de verdade em produção (Descobrir ficando "lenta, tentando
+// carregar tudo ao mesmo tempo"). `todos()` sem `limite` explícito agora
+// para de paginar depois de `TETO_PAGINAS_SEGURANCA` páginas e AVISA no
+// console — é um teto de emergência, não a solução: quem precisa de uma
+// tabela grande inteira (agregação, backup) deve pedir explicitamente com
+// `limite` ou usar `buscarTop`/consulta filtrada no servidor, não confiar
+// no `todos()` genérico crescendo sem fim.
+const TETO_PAGINAS_SEGURANCA = 30; // 30 × 1000 = 30 mil linhas no máximo por chamada sem `limite`
+
 /**
  * `indice`/`faixa`: quando os dois vêm preenchidos, filtra por igualdade
  * nessa coluna (equivalente ao que antes era `IDBKeyRange.only(faixa)`).
  * Pagina automaticamente além do limite de 1000 linhas por requisição do
- * PostgREST — necessário pra `usina_aneel` depois de um import grande.
+ * PostgREST — necessário pra `usina_aneel` depois de um import grande, mas
+ * travado em `TETO_PAGINAS_SEGURANCA` (ver acima).
  */
 export async function todos(loja, indice, faixa, limite) {
   const sb = await abrir();
@@ -99,18 +113,59 @@ export async function todos(loja, indice, faixa, limite) {
   if (limite) return checar(await base.limit(limite));
 
   let acc = [], desde = 0;
-  for (;;) {
+  for (let pagina_n = 0; pagina_n < TETO_PAGINAS_SEGURANCA; pagina_n++) {
     const pagina = await checar(await base.range(desde, desde + TAMANHO_PAGINA - 1));
     acc = acc.concat(pagina);
-    if (pagina.length < TAMANHO_PAGINA) break;
+    if (pagina.length < TAMANHO_PAGINA) return acc;
     desde += TAMANHO_PAGINA;
+  }
+  console.warn(`todos('${loja}') parou em ${acc.length} linhas (teto de segurança) — `
+    + 'use `limite` explícito ou `buscarTop`/`contar` com filtro pra tabelas grandes.');
+  return acc;
+}
+
+/**
+ * Busca ordenada e limitada EM UMA SÓ REQUISIÇÃO — para telas sobre tabelas
+ * grandes (Descobrir sobre `empresa`) onde `todos()` paginando tudo seria o
+ * próprio gargalo. `filtro` é um escape hatch pro query builder do
+ * supabase-js (`.eq()`, `.contains()` em coluna array, etc.), pra não travar
+ * este helper a um único tipo de filtro.
+ */
+export async function buscarTop(loja, { colunas = '*', ordenarPor, ascendente = false, limite = 3000, filtro } = {}) {
+  const sb = await abrir();
+  let q = sb.from(loja).select(colunas);
+  if (filtro) q = filtro(q);
+  if (ordenarPor) q = q.order(ordenarPor, { ascending: ascendente, nullsFirst: false });
+  return checar(await q.limit(limite));
+}
+
+/**
+ * Busca só as `empresa` cujos CNPJs estão na lista — pro caso comum de "tenho
+ * uma leva de leads, preciso do contato/potência de cada um". Painel, Fila e
+ * Exportar faziam `todos('empresa')` (a tabela inteira) só pra montar esse
+ * lookup; numa base grande da ANEEL isso reproduz o mesmo gargalo do
+ * Descobrir, e sem necessidade — o número de leads de uma equipe é sempre
+ * muito menor que o total de empresas na base.
+ */
+export async function empresasPorCnpj(cnpjs) {
+  const unicos = [...new Set(cnpjs.filter(Boolean))];
+  if (!unicos.length) return [];
+  const sb = await abrir();
+  const LOTE = 300; // `.in()` com milhares de valores estoura o tamanho da URL
+  let acc = [];
+  for (let i = 0; i < unicos.length; i += LOTE) {
+    const pagina = await checar(await sb.from('empresa').select('*').in('cnpj', unicos.slice(i, i + LOTE)));
+    acc = acc.concat(pagina);
   }
   return acc;
 }
 
-export async function contar(loja) {
+/** `aplicarFiltro`, quando passado, recebe o query builder — `(q) => q.not('x', 'is', null)` etc. */
+export async function contar(loja, aplicarFiltro) {
   const sb = await abrir();
-  const { count, error } = await sb.from(loja).select('*', { count: 'exact', head: true });
+  let q = sb.from(loja).select('*', { count: 'exact', head: true });
+  if (aplicarFiltro) q = aplicarFiltro(q);
+  const { count, error } = await q;
   if (error) throw new Error(error.message);
   return count || 0;
 }
@@ -121,11 +176,15 @@ export async function put(loja, valor) {
   return data || valor;
 }
 
-/** Upsert em lotes — evita payload/URL grandes demais num import de milhares de linhas. */
+/**
+ * Upsert em lotes. LOTE=2000 (não 500): pra 360 mil linhas isso é a diferença
+ * entre ~180 requisições e ~720 — o import da ANEEL sem recorte também estava
+ * martelando o Supabase por causa disso, não só a tela de Descobrir.
+ */
 export async function putMuitos(loja, valores) {
   if (!valores.length) return 0;
   const sb = await abrir();
-  const LOTE = 500;
+  const LOTE = 2000;
   const limpos = valores.map(semUndefined);
   for (let i = 0; i < limpos.length; i += LOTE) {
     await checar(await sb.from(loja).upsert(limpos.slice(i, i + LOTE)));
@@ -360,7 +419,11 @@ export async function agregarEmpresas(cnpjs) {
     if (!a.razao_social && u.titular) a.razao_social = u.titular;
   });
 
-  const existentes = new Map((await todos('empresa')).map((e) => [e.cnpj, e]));
+  // `percorrer` (não `todos`) de propósito: precisa ver TODA `empresa`, sem o
+  // teto de segurança de `todos()` — truncar aqui perderia telefone/e-mail já
+  // enriquecido de quem ficasse de fora do corte numa base grande.
+  const existentes = new Map();
+  await percorrer('empresa', null, null, (e) => { existentes.set(e.cnpj, e); });
   const registros = [];
   for (const [cnpj, a] of acc) {
     const ant = existentes.get(cnpj) || { created_at: new Date().toISOString() };

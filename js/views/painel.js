@@ -4,7 +4,7 @@
 
 import { h, fmtNum, fmtPotencia, hojeISO, addDias, fmtData, limpar, dataLocal } from '../util.js';
 import { STATUS, STATUS_MAP, STATUS_FILA, statusLabel, origemLabel } from '../seed.js';
-import { todos, buscarLeads } from '../db.js';
+import { todos, buscarLeads, empresasPorCnpj } from '../db.js';
 import { cabecalhoPagina, card, kpi, vazio, badge } from '../ui.js';
 import { taxaPreenchimento } from '../enriquecer.js';
 
@@ -26,13 +26,14 @@ function barras(itens, { formatar = fmtNum, cor = 'azul' } = {}) {
 export async function viewPainel(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
 
-  const [leads, interacoes, perfis, concessionarias, empresas] = await Promise.all([
+  const [leads, interacoes, perfis, concessionarias] = await Promise.all([
     buscarLeads({ owner_id: ehGestor ? null : perfil.id }),
     todos('interacao'),
     todos('profiles'),
     todos('concessionaria'),
-    todos('empresa'),
   ]);
+  // só as empresas dos leads carregados, não a tabela inteira (ver comentário em empresasPorCnpj)
+  const empresas = await empresasPorCnpj(leads.map((l) => l.cnpj));
 
   const raiz = h('div', { class: 'pagina' });
 
@@ -187,6 +188,9 @@ export async function viewPainel(params, ctxApp) {
           kpi('Pendentes', fmtNum(taxa.pendentes))),
         h('div', { class: 'linha-botoes linha-botoes--fina' },
           Object.entries(taxa.porFonte).map(([f, n]) => badge(`${f}: ${fmtNum(n)}`, 'cinza'))),
+        taxa.porFonteAmostra
+          ? h('p', { class: 'texto-fraco' }, '"Por fonte" é uma amostra (até 3.000 registros), não a base inteira.')
+          : null,
         h('p', { class: 'texto-fraco' },
           'Lembrete de qualidade: o e-mail da base da Receita é majoritariamente contábil/fiscal, '
           + 'não do decisor. Telefone e LinkedIn seguem sendo os canais que convertem.'))

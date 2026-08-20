@@ -6,7 +6,7 @@ import {
   h, maskCnpj, maskFone, fmtData, fmtPotencia, hojeISO, debounce, diasEntre, limpar,
 } from '../util.js';
 import { STATUS_FILA, STATUS, statusLabel } from '../seed.js';
-import { buscarLeads, ordenarFila, todos, salvarLead, get } from '../db.js';
+import { buscarLeads, ordenarFila, todos, salvarLead, get, empresasPorCnpj } from '../db.js';
 import {
   cabecalhoPagina, tabela, badgeStatus, badge, vazio, toast, pills, perguntar, confirmar,
 } from '../ui.js';
@@ -168,8 +168,9 @@ export async function viewFila(params, ctxApp) {
       h('button', {
         class: 'btn btn--mini',
         onclick: async () => {
-          const empresas = await todos('empresa');
-          baixarLeads(selecionados(), contexto({ perfis, concessionarias, empresas }),
+          const alvo = selecionados();
+          const empresas = await empresasPorCnpj(alvo.map((l) => l.cnpj));
+          baixarLeads(alvo, contexto({ perfis, concessionarias, empresas }),
             perfil.nome, 'selecao');
         },
       }, 'Exportar seleção'),

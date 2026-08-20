@@ -4,7 +4,7 @@
 
 import { h, fmtNum, hojeISO, addDias, fmtData, baixar, nomeArquivo, dataLocal } from '../util.js';
 import { STATUS, STATUS_FILA, statusLabel, COLUNAS_PLANILHA, COLUNAS_EXTRAS } from '../seed.js';
-import { todos, buscarLeads } from '../db.js';
+import { todos, buscarLeads, empresasPorCnpj } from '../db.js';
 import { cabecalhoPagina, card, kpi, toast, vazio, badge, pills } from '../ui.js';
 import { contexto, csvLeads, csvInteracoes, abrirRelatorio } from '../exporta.js';
 
@@ -13,9 +13,11 @@ const PRONTOS = ['qualificado', 'proposta', 'ganho'];
 export async function viewExportar(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
 
-  const [perfis, concessionarias, empresas, interacoes] = await Promise.all([
-    todos('profiles'), todos('concessionaria'), todos('empresa'), todos('interacao'),
+  const [perfis, concessionarias, todosLeads, interacoes] = await Promise.all([
+    todos('profiles'), todos('concessionaria'), buscarLeads({}), todos('interacao'),
   ]);
+  // só as empresas dos leads que existem, não a tabela inteira (base da ANEEL pode ter centenas de milhares)
+  const empresas = await empresasPorCnpj(todosLeads.map((l) => l.cnpj));
   const ctx = contexto({ perfis, concessionarias, empresas });
 
   const filtro = {
