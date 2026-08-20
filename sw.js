@@ -8,7 +8,7 @@
 // que fica sem dependência nenhuma. Se a versão Next.js do plano nascer depois,
 // troca por `@serwist/turbopack` sem mudar o contrato de cache abaixo.
 
-const VERSAO = 'lex-prospecta-v3';
+const VERSAO = 'lex-prospecta-v4';
 const CACHE_SHELL = `${VERSAO}-shell`;
 
 const ARQUIVOS_SHELL = [
@@ -78,7 +78,7 @@ async function respostaNavegacao(req) {
   }
 }
 
-/** Estáticos do próprio app: cache-first, atualiza em segundo plano (stale-while-revalidate). */
+/** Imagens/ícones: cache-first, atualiza em segundo plano (stale-while-revalidate) — raramente mudam. */
 async function respostaEstatico(req) {
   const cache = await caches.open(CACHE_SHELL);
   const doCache = await cache.match(req);
@@ -87,6 +87,25 @@ async function respostaEstatico(req) {
     return rede;
   }).catch(() => null);
   return doCache || (await buscaRede) || Response.error();
+}
+
+/**
+ * JS/CSS: rede primeiro, cache só como fallback offline.
+ * Motivo: cache-first já serviu código com bug de paginação (offset sem
+ * limite) por horas depois do deploy corrigido, porque a aba antiga nunca
+ * troca de service worker sozinha. Lógica muda mais rápido que imagem —
+ * aqui o custo de rede-primeiro (1 request a mais por arquivo, no pior caso)
+ * é bem menor que o de servir JS desatualizado numa correção de produção.
+ */
+async function respostaRedePrimeiro(req) {
+  const cache = await caches.open(CACHE_SHELL);
+  try {
+    const rede = await fetch(req);
+    if (rede.ok) cache.put(req, rede.clone());
+    return rede;
+  } catch {
+    return (await cache.match(req)) || Response.error();
+  }
 }
 
 self.addEventListener('fetch', (ev) => {
@@ -100,8 +119,12 @@ self.addEventListener('fetch', (ev) => {
     ev.respondWith(respostaNavegacao(req));
     return;
   }
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
+    ev.respondWith(respostaRedePrimeiro(req));
+    return;
+  }
   if (ARQUIVOS_SHELL.some((a) => url.pathname.endsWith(a.replace('./', '/')))
-    || url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.png')) {
+    || url.pathname.endsWith('.png')) {
     ev.respondWith(respostaEstatico(req));
   }
 });
