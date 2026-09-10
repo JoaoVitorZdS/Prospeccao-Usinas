@@ -48,5 +48,39 @@ insert into public.concessionaria (codigo, nome, uf, aliases) values
 ('EFLUL', 'EFLUL', 'SC', array['EFLUL','EMPRESA FORCA E LUZ URUSSANGA']),
 ('HIDROPAN', 'Hidropan', 'RS', array['HIDROPAN']),
 ('CERR', 'CERR', 'RR', array['CERR']),
+('DEMEI', 'Demei', 'RS', array['DEMEI','DEPARTAMENTO MUNICIPAL DE ENERGIA DE IJUI']),
+('COOPERA', 'Coopera', 'SC', array['COOPERA','COOPERATIVA PIONEIRA DE ELETRIFICACAO']),
+('CERES', 'Ceres', 'RJ', array['CERES','COOPERATIVA DE ELETRIFICACAO RURAL DE RESENDE']),
+('CERBRANORTE', 'Cerbranorte', 'SC', array['CERBRANORTE','COOPERATIVA DE ELETRIFICACAO BRACO DO NORTE']),
+('CERTEL', 'Certel Energia', 'RS', array['CERTEL','CERTEL ENERGIA','COOPERATIVA REGIONAL DE ELETRIFICACAO TEUTONIA']),
+('COOPERALIANCA', 'Cooperaliança', 'SC', array['COOPERALIANCA','COOPERALIANÇA','COOPERATIVA ALIANCA']),
+('CEDRAP', 'Cedrap', 'SP', array['CEDRAP','COOPERATIVA DE ELETRIFICACAO RURAL DE ITAI PARANAPANEMA E AVARE']),
 ('OUTRA', 'Outra / não identificada', null, array[]::text[])
 on conflict (codigo) do update set nome = excluded.nome, uf = excluded.uf, aliases = excluded.aliases;
+
+-- ── Backlog comercial por distribuidora (kWh/mês de consumo sem usina casada) ──
+-- Carga inicial do levantamento atual. A tela Backlog do app passa a ser a
+-- fonte da verdade — o gestor edita por lá. `do nothing` no conflito pra um
+-- re-run do seed não sobrescrever valor já ajustado na tela.
+-- Mantenha em sincronia com BACKLOG_INICIAL em js/seed.js.
+insert into public.backlog (concessionaria_codigo, backlog_kwh_mes) values
+('ENEL-SP', 1734765),
+('EDP-SP', 913427),
+('ENERGISA-RO', 524894),
+('LIGHT', 341965),
+('ENERGISA-AC', 241437),
+('EQUATORIAL-PA', 172971),
+('RORAIMA', 120050),
+('DEMEI', 99130),
+('DMED', 84439),
+('CPFL-PIRATININGA', 75434),
+('COOPERA', 50255),
+('CERES', 38629),
+('CERBRANORTE', 35263),
+('CERTEL', 26778),
+('ENEL-GO', 21387),
+('COOPERALIANCA', 20096),
+('ENERGISA-PB', 17719),
+('CEDRAP', 17112),
+('MUX', 15859)
+on conflict (concessionaria_codigo) do nothing;

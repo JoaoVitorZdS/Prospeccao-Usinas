@@ -8,7 +8,7 @@
 // que fica sem dependência nenhuma. Se a versão Next.js do plano nascer depois,
 // troca por `@serwist/turbopack` sem mudar o contrato de cache abaixo.
 
-const VERSAO = 'lex-prospecta-v4';
+const VERSAO = 'lex-prospecta-v5';
 const CACHE_SHELL = `${VERSAO}-shell`;
 
 const ARQUIVOS_SHELL = [
@@ -30,6 +30,7 @@ const ARQUIVOS_SHELL = [
   './js/views/fila.js',
   './js/views/conversas.js',
   './js/views/descobrir.js',
+  './js/views/backlog.js',
   './js/views/importar.js',
   './js/views/painel.js',
   './js/views/exportar.js',

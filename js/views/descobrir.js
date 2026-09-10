@@ -59,8 +59,10 @@ export async function viewDescobrir(params, ctxApp) {
   const leadsAtivos = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
   const supressao = await carregarSupressao();
 
+  // uf/conc podem vir pré-selecionados pela URL (#/descobrir?conc=ENEL-SP) —
+  // é assim que "Ver usinas" da tela Backlog cai aqui já filtrado.
   const filtro = {
-    uf: '', conc: '', geracao: '', porte: '', modalidade: '', fase: '',
+    uf: params.uf || '', conc: params.conc || '', geracao: '', porte: '', modalidade: '', fase: '',
     potMin: '', potMax: '', conexaoDe: '', conexaoAte: '',
     comTelefone: false, comEmail: false, semLead: true, texto: '',
   };
@@ -150,6 +152,7 @@ export async function viewDescobrir(params, ctxApp) {
     const s = h('select', {},
       h('option', { value: '' }, `${rot}: todas`),
       opcoes.map((o) => h('option', { value: o }, formatar ? formatar(o) : o)));
+    s.value = filtro[chave] ?? ''; // reflete o que veio da URL / do estado atual
     s.addEventListener('change', async () => {
       filtro[chave] = s.value;
       if (remoto) {

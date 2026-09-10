@@ -449,6 +449,29 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--acento); ou
 .barra__fill--cinza { background: var(--texto-mais-fraco); }
 .barra__val { text-align: right; font-weight: 700; color: var(--texto-fraco); }
 
+/* ═══ Backlog (barra por distribuidora + ações) ═══ */
+/* A .barra do Painel é 3 colunas fixas e sem espaço pra botão — layout próprio. */
+.bl-lista { display: flex; flex-direction: column; gap: 6px; }
+.bl-linha {
+  display: grid;
+  grid-template-columns: 150px 1fr minmax(120px, auto) auto;
+  align-items: center; gap: 10px; font-size: 13px; padding: 3px 0;
+}
+.bl-linha__nome { color: var(--texto); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bl-linha__trilho { background: var(--bg-sutil); border-radius: 4px; height: 12px; overflow: hidden; }
+.bl-linha__fill { height: 100%; border-radius: 4px; background: var(--erro); min-width: 0; }
+.bl-linha__val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--texto-fraco); }
+.bl-linha__acoes { display: flex; gap: 6px; justify-content: flex-end; }
+.bl-linha--zero { opacity: .55; }
+.bl-linha--zero .bl-linha__fill { background: var(--texto-mais-fraco); }
+@media (max-width: 640px) {
+  .bl-linha { grid-template-columns: 1fr auto; row-gap: 4px; padding: 8px 0; }
+  .bl-linha__nome { grid-column: 1; }
+  .bl-linha__val { grid-column: 2; order: 2; }
+  .bl-linha__trilho { grid-column: 1 / -1; order: 3; }
+  .bl-linha__acoes { grid-column: 1 / -1; order: 4; justify-content: flex-start; }
+}
+
 /* ═══ Progresso ═══ */
 .prog { display: flex; flex-direction: column; gap: 6px; }
 .prog__trilho { background: var(--bg-sutil); border-radius: 999px; height: 8px; overflow: hidden; }

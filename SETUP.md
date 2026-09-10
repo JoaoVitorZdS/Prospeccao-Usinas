@@ -40,11 +40,14 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    New query. Cole e rode, uma de cada vez, nesta ordem exata (cada uma
    ajusta o que a anterior criou):
    `0001_init.sql` → `0002_fase1_dados_compartilhados.sql` →
-   `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql`.
-   As duas últimas existem porque `empresa`/`lead` ganharam campos (enriquecimento
+   `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql` →
+   `0005_backlog.sql`.
+   `0003`/`0004` existem porque `empresa`/`lead` ganharam campos (enriquecimento
    de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
    `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
-   Descobrir falha com "column not found".
+   Descobrir falha com "column not found". `0005` cria a tabela `backlog`
+   (consumo por distribuidora ainda sem usina casada — ver seção "Backlog"
+   abaixo); sem ela a tela Backlog do app dá erro, o resto funciona.
    (Se um dia autenticar o `supabase` CLI: `supabase link --project-ref <ref> && supabase db push`
    roda todas de uma vez, na ordem dos nomes dos arquivos.)
 3. **Rode o seed** das concessionárias: cole `supabase/seed.sql` no SQL Editor
@@ -177,6 +180,40 @@ Testado contra o projeto real inserindo 5.000 linhas sintéticas por cima das
 que nada real foi apagado): busca ordenada em 1 requisição, filtro por UF
 batendo com a contagem real, `taxaPreenchimento()` respondendo em <0,5s via
 `contar()` em vez de baixar a tabela.
+
+## Backlog — o mapa de onde faltam usinas
+
+"Backlog" aqui é comercial, não de engenharia: é o consumo (kWh/mês) que a
+Alexandria já tem contratado ou em pipeline numa área de concessão e que
+**ainda não casou com uma usina geradora na mesma distribuidora**. A
+compensação de GD amarra usina e unidade consumidora à mesma distribuidora,
+então isso é sempre um problema por distribuidora — não dá pra atender Enel SP
+com usina em Minas. Quanto maior a lacuna, mais vale prospectar geração ali.
+
+- **Tabela `backlog`** (`0005_backlog.sql`): uma linha por distribuidora,
+  `backlog_kwh_mes` + `nota` + rastro de `atualizado_por`/`atualizado_em`. FK
+  pra `concessionaria(codigo)`. RLS aberta pra `anon` como as outras (fase 1).
+- **Tela Backlog** (`js/views/backlog.js`, rota `#/backlog`): barras
+  ranqueadas por lacuna, KPIs (distribuidoras aguardando, backlog somado,
+  maior lacuna) e, por linha, **"Ver usinas"** — que abre Descobrir já
+  filtrado naquela distribuidora (`#/descobrir?conc=<codigo>`). Gestor edita o
+  valor inline (✎) e adiciona distribuidora ("+ Distribuidora"); agente vê só
+  leitura. Zerar o valor tira a linha da lista ativa sem apagá-la.
+- **Carga inicial**: `BACKLOG_INICIAL` em `js/seed.js` (do levantamento atual)
+  + o `insert` em `supabase/seed.sql`. O app semeia sozinho na primeira visita
+  à tela (`semearBacklog()`), só com códigos que já existem em `concessionaria`.
+- **7 permissionárias novas no cadastro** (Demei, Coopera, Ceres, Cerbranorte,
+  Certel, Cooperaliança, Cedrap): apareciam no backlog mas não estavam no
+  espelho do titan-helpdesk. Adicionadas a `CONCESSIONARIAS`/`seed.sql`;
+  `semearConcessionarias()` passou a preencher só os códigos que faltam num
+  banco já populado, em vez de reescrever a lista inteira a cada boot. UF de
+  Ceres (coop. de Resende/RJ) e Cedrap (coop. do interior de SP) vale conferir.
+- **"Equatorial GO"** do relatório cai em `ENEL-GO` — o cadastro já trata
+  `EQUATORIAL GO` como alias de Enel Goiás.
+
+Nada de conversão kWp→kWh nem "% de cobertura por usina": a tela é sobre
+*onde* falta e *quanto* falta em números absolutos, e a priorização em
+Descobrir continua sendo por potência somada da empresa.
 
 ## Backup
 
@@ -325,7 +362,7 @@ lex-prospecta/
 │  ├─ enriquecer.js                 # adaptador OpenCNPJ + fallback
 │  ├─ exporta.js                    # CSV e relatório de impressão
 │  ├─ ui.js                         # primitivas de interface
-│  └─ views/                        # uma tela por arquivo (inclui conversas.js)
+│  └─ views/                        # uma tela por arquivo (inclui conversas.js, backlog.js)
 ├─ icons/                           # ícones do PWA + gerador Python
 ├─ etl/amostras/                    # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
 ├─ test/                            # node --test — cobre util/parse/aneel contra dado real
@@ -334,6 +371,7 @@ lex-prospecta/
 │  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta pra rodar sem Entra ID (fase 1, atual)
 │  ├─ migrations/0003_colunas_faltantes.sql            # colunas de empresa que 0001 não previu
 │  ├─ migrations/0004_lead_razao_social.sql            # idem, pra lead
-│  └─ seed.sql                       # concessionárias
+│  ├─ migrations/0005_backlog.sql                      # tabela backlog (consumo por distribuidora sem usina)
+│  └─ seed.sql                       # concessionárias + carga inicial do backlog
 └─ doc/LIA-legitimo-interesse.md
 ```

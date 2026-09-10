@@ -7,6 +7,7 @@ import { registrarRota, renderRota, navegar, toast, modal, drawerEstaAberto, fec
 import { viewFila } from './views/fila.js';
 import { viewConversas } from './views/conversas.js';
 import { viewDescobrir } from './views/descobrir.js';
+import { viewBacklog } from './views/backlog.js';
 import { viewImportar } from './views/importar.js';
 import { viewPainel } from './views/painel.js';
 import { viewExportar } from './views/exportar.js';
@@ -16,6 +17,7 @@ const NAV = [
   { rota: 'fila', label: 'Minha fila', icone: '◧' },
   { rota: 'conversas', label: 'Conversas', icone: '💬' },
   { rota: 'descobrir', label: 'Descobrir', icone: '◎' },
+  { rota: 'backlog', label: 'Backlog', icone: '▦' },
   { rota: 'importar', label: 'Importar', icone: '⇩' },
   { rota: 'painel', label: 'Painel', icone: '▤' },
   { rota: 'exportar', label: 'Exportar', icone: '⇧' },
@@ -256,6 +258,7 @@ async function boot() {
   registrarRota('fila', comCtx(viewFila));
   registrarRota('conversas', comCtx(viewConversas));
   registrarRota('descobrir', comCtx(viewDescobrir));
+  registrarRota('backlog', comCtx(viewBacklog));
   registrarRota('importar', comCtx(viewImportar));
   registrarRota('painel', comCtx(viewPainel));
   registrarRota('exportar', comCtx(viewExportar));

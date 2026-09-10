@@ -26,11 +26,11 @@
 // a CSP em `script-src 'self'`, sem abrir mão da política já testada.
 
 import { uuid, digits, normCnpj, normFone, foneKey, normEmail, slug, hojeISO, dataLocal } from './util.js';
-import { CONCESSIONARIAS, STATUS_MAP } from './seed.js';
+import { CONCESSIONARIAS, BACKLOG_INICIAL, STATUS_MAP } from './seed.js';
 import { SUPABASE_URL, SUPABASE_KEY } from './supabase-config.js';
 
 export const LOJAS = ['profiles', 'concessionaria', 'usina_aneel', 'empresa', 'lead',
-  'interacao', 'supressao', 'import_lote', 'captura_config'];
+  'interacao', 'supressao', 'import_lote', 'captura_config', 'backlog'];
 
 const VERSAO_BACKUP = 2; // 1 = formato da era IndexedDB; 2 = inclui config local separado
 
@@ -38,7 +38,7 @@ const VERSAO_BACKUP = 2; // 1 = formato da era IndexedDB; 2 = inclui config loca
 const PK = {
   profiles: 'id', concessionaria: 'codigo', usina_aneel: 'cod_empreendimento',
   empresa: 'cnpj', lead: 'id', interacao: 'id', supressao: 'id',
-  import_lote: 'id', captura_config: 'id',
+  import_lote: 'id', captura_config: 'id', backlog: 'concessionaria_codigo',
 };
 
 let _sb = null;
@@ -244,11 +244,17 @@ export async function setConfig(chave, valor) {
 let _aliasIndex = null;
 
 export async function semearConcessionarias(forcar = false) {
-  const n = await contar('concessionaria');
-  if (n > 0 && !forcar) return n;
-  await putMuitos('concessionaria', CONCESSIONARIAS.map((c) => ({ ...c })));
+  const atuais = await todos('concessionaria');
+  const existentes = new Set(atuais.map((c) => c.codigo));
+  const faltando = CONCESSIONARIAS.filter((c) => !existentes.has(c.codigo));
+  // já cheia e sem código novo → não escreve nada (evita martelar o Supabase a cada boot)
+  if (atuais.length && !faltando.length && !forcar) return atuais.length;
+  // primeira vez → tudo; já cheia mas com código novo (ex.: as permissionárias do
+  // backlog) → só os que faltam, sem reescrever as 40+ existentes
+  const alvo = forcar || !atuais.length ? CONCESSIONARIAS : faltando;
+  await putMuitos('concessionaria', alvo.map((c) => ({ ...c })));
   _aliasIndex = null;
-  return CONCESSIONARIAS.length;
+  return alvo.length;
 }
 
 async function aliasIndex() {
@@ -284,6 +290,43 @@ export async function casarConcessionaria(texto) {
     }
   }
   return melhor;
+}
+
+/* ═══════════════ Backlog comercial por distribuidora ═══════════════ */
+// kWh/mês de consumo que já está contratado/em pipeline numa área de concessão e
+// ainda não tem usina geradora casada na MESMA distribuidora. É o que a tela
+// Backlog mostra e o que dá prioridade de prospecção em Descobrir. Fonte da
+// verdade: tabela `backlog` no Supabase; `BACKLOG_INICIAL` (seed.js) é só a
+// carga da primeira vez.
+
+export const backlogTodos = () => todos('backlog');
+
+/** Semeia `backlog` a partir de BACKLOG_INICIAL se a tabela estiver vazia. Idempotente. */
+export async function semearBacklog(forcar = false) {
+  const n = await contar('backlog');
+  if (n > 0 && !forcar) return n;
+  // só semeia códigos que existem em `concessionaria` (a FK barraria o lote inteiro)
+  const validos = new Set((await todos('concessionaria')).map((c) => c.codigo));
+  const registros = Object.entries(BACKLOG_INICIAL)
+    .filter(([codigo]) => validos.has(codigo))
+    .map(([concessionaria_codigo, backlog_kwh_mes]) => ({ concessionaria_codigo, backlog_kwh_mes }));
+  if (!registros.length) return 0;
+  await putMuitos('backlog', registros);
+  return registros.length;
+}
+
+/** Grava o backlog de uma distribuidora. `valor` em kWh/mês, negativo vira 0. */
+export async function salvarBacklog(codigo, valor, { perfilId, nota } = {}) {
+  if (!codigo) throw new Error('Distribuidora é obrigatória.');
+  const reg = {
+    concessionaria_codigo: codigo,
+    backlog_kwh_mes: Math.max(0, Number(valor) || 0),
+    nota: nota || null,
+    atualizado_por: perfilId || null,
+    atualizado_em: new Date().toISOString(),
+  };
+  await put('backlog', reg);
+  return reg;
 }
 
 /* ═══════════════ Perfis ═══════════════ */

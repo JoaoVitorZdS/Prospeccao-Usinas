@@ -49,8 +49,46 @@ export const CONCESSIONARIAS = [
   { codigo: 'EFLUL', nome: 'EFLUL', uf: 'SC', aliases: ['EFLUL', 'EMPRESA FORCA E LUZ URUSSANGA'] },
   { codigo: 'HIDROPAN', nome: 'Hidropan', uf: 'RS', aliases: ['HIDROPAN'] },
   { codigo: 'CERR', nome: 'CERR', uf: 'RR', aliases: ['CERR'] },
+  // Permissionárias pequenas que aparecem no backlog comercial mas não estavam
+  // no espelho do titan-helpdesk. UF de Ceres/Cedrap conferir (coop. de Resende/RJ
+  // e coop. do interior de SP, respectivamente) — o gestor ajusta na tela se preciso.
+  { codigo: 'DEMEI', nome: 'Demei', uf: 'RS', aliases: ['DEMEI', 'DEPARTAMENTO MUNICIPAL DE ENERGIA DE IJUI'] },
+  { codigo: 'COOPERA', nome: 'Coopera', uf: 'SC', aliases: ['COOPERA', 'COOPERATIVA PIONEIRA DE ELETRIFICACAO'] },
+  { codigo: 'CERES', nome: 'Ceres', uf: 'RJ', aliases: ['CERES', 'COOPERATIVA DE ELETRIFICACAO RURAL DE RESENDE'] },
+  { codigo: 'CERBRANORTE', nome: 'Cerbranorte', uf: 'SC', aliases: ['CERBRANORTE', 'COOPERATIVA DE ELETRIFICACAO BRACO DO NORTE'] },
+  { codigo: 'CERTEL', nome: 'Certel Energia', uf: 'RS', aliases: ['CERTEL', 'CERTEL ENERGIA', 'COOPERATIVA REGIONAL DE ELETRIFICACAO TEUTONIA'] },
+  { codigo: 'COOPERALIANCA', nome: 'Cooperaliança', uf: 'SC', aliases: ['COOPERALIANCA', 'COOPERALIANÇA', 'COOPERATIVA ALIANCA'] },
+  { codigo: 'CEDRAP', nome: 'Cedrap', uf: 'SP', aliases: ['CEDRAP', 'COOPERATIVA DE ELETRIFICACAO RURAL DE ITAI PARANAPANEMA E AVARE'] },
   { codigo: 'OUTRA', nome: 'Outra / não identificada', uf: null, aliases: [] },
 ];
+
+/* Carga inicial do backlog comercial por distribuidora — kWh/mês de consumo que
+   a Alexandria já tem contratado/em pipeline naquela área de concessão e ainda
+   não casou com uma usina geradora na MESMA distribuidora (regra da compensação
+   de GD). É SÓ a semente da primeira vez: assim que a tabela `backlog` do
+   Supabase tem linha, a tela Backlog é a fonte da verdade e o gestor edita por
+   lá. Se mexer aqui, espelhe no insert de supabase/seed.sql. */
+export const BACKLOG_INICIAL = {
+  'ENEL-SP': 1734765,
+  'EDP-SP': 913427,
+  'ENERGISA-RO': 524894,
+  'LIGHT': 341965,
+  'ENERGISA-AC': 241437,
+  'EQUATORIAL-PA': 172971,
+  'RORAIMA': 120050,
+  'DEMEI': 99130,
+  'DMED': 84439,
+  'CPFL-PIRATININGA': 75434,
+  'COOPERA': 50255,
+  'CERES': 38629,
+  'CERBRANORTE': 35263,
+  'CERTEL': 26778,
+  'ENEL-GO': 21387, // "Equatorial GO" no relatório — cadastro casa esse alias em ENEL-GO
+  'COOPERALIANCA': 20096,
+  'ENERGISA-PB': 17719,
+  'CEDRAP': 17112,
+  'MUX': 15859,
+};
 
 /* ══ Estágios (seção 5.3) ══
    "Desenvolveu" é resultado, não estado de trabalho. Estes são o mínimo para existir fila.
