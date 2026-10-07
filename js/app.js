@@ -1,10 +1,16 @@
-// app.js — bootstrap, shell e roteamento.
+// app.js — bootstrap, casca (barra lateral + barra superior) e roteamento.
+//
+// Ordem do boot: abre o cliente Supabase → confere a sessão (Supabase Auth) → liga a conta ao
+// perfil → se o perfil estiver pendente, segura na tela "Aguardando aprovação" → só então monta
+// o app. Sem sessão, quem aparece é a tela de login (views/login.js). O isolamento dos dados é
+// do RLS no banco; o que esta camada esconde (menus, rotas de gestor) é só conveniência.
 
 import { h, $, fmtNum, hojeISO } from './util.js';
-import { abrir, semearConcessionarias, perfis, criarPerfil, perfilAtual,
-  definirPerfilAtual, getConfig, setConfig, contar, buscarLeads } from './db.js';
+import { abrir, semearConcessionarias, perfilAtual, getConfig, setConfig, contar, buscarLeads } from './db.js';
+import { sessaoAtual, sair, aoSair, erroNaUrl, emRecuperacao, limparUrlAuth } from './auth.js';
 import { registrarRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
-  icone, avatar, menuSuspenso } from './ui.js';
+  icone, avatar, menuSuspenso, vazio } from './ui.js';
+import { telaLogin, telaPendente, telaNovaSenha } from './views/login.js';
 import { viewFila } from './views/fila.js';
 import { viewConversas } from './views/conversas.js';
 import { viewDescobrir } from './views/descobrir.js';
@@ -13,6 +19,8 @@ import { viewImportar } from './views/importar.js';
 import { viewPainel } from './views/painel.js';
 import { viewExportar } from './views/exportar.js';
 import { viewConfig } from './views/config.js';
+import { viewPerfil } from './views/perfil.js';
+import { viewContas } from './views/contas.js';
 
 // Barra lateral (rail). Os ids de rota ainda são os antigos (fila, conversas, descobrir…);
 // só os rótulos mudaram — a renomeação das rotas acontece junto com cada tela refeita.
@@ -26,75 +34,15 @@ const NAV_TOPO = [
   { rota: 'exportar', label: 'Exportar', icone: 'exportar' },
 ];
 const NAV_BASE = [
+  { rota: 'contas', label: 'Contas', icone: 'usuario', soGestor: true },
   { rota: 'config', label: 'Admin', icone: 'admin' },
 ];
 
 const ctxApp = { perfil: null, ehGestor: false, recarregarApp: null };
 
-/* ═══════════════ Onboarding ═══════════════ */
+const ehGestorPapel = (papel) => papel === 'gestor' || papel === 'admin';
 
-/** Sem Entra ID, o "login" é a identificação local do agente. */
-function pedirPerfil(existentes) {
-  return new Promise((resolve) => {
-    const nome = h('input', { type: 'text', placeholder: 'Seu nome', autofocus: true });
-    const email = h('input', { type: 'email', placeholder: 'voce@alexandriabr.com' });
-    const papel = h('select', {},
-      h('option', { value: 'gestor' }, 'Gestor — vejo tudo e distribuo leads'),
-      h('option', { value: 'agente' }, 'Agente — vejo a minha carteira'));
-
-    const listaExistente = existentes.length
-      ? h('div', { class: 'onb__existentes' },
-        h('p', { class: 'texto-fraco' }, 'Ou entre como alguém já cadastrado:'),
-        h('div', { class: 'linha-botoes' }, existentes.map((p) =>
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              await definirPerfilAtual(p.id);
-              m.fechar();
-              resolve(p);
-            },
-          }, p.nome, h('em', {}, p.papel)))))
-      : null;
-
-    const m = modal({
-      titulo: existentes.length ? 'Quem está usando?' : 'Bem-vindo ao WattScout',
-      largura: '560px',
-      corpo: h('div', {},
-        !existentes.length
-          ? h('p', { class: 'texto' },
-            'Os dados ficam no Supabase da equipe, compartilhados entre todos os agentes — '
-            + 'ainda sem login de verdade, então diga quem você é para que os leads e os '
-            + 'toques fiquem com autoria.')
-          : null,
-        h('div', { class: 'form' },
-          h('label', { class: 'campo' }, h('span', {}, 'Nome'), nome),
-          h('label', { class: 'campo' }, h('span', {}, 'E-mail'), email),
-          h('label', { class: 'campo' }, h('span', {}, 'Papel'), papel,
-            h('small', {}, 'O primeiro cadastro costuma ser gestor. Dá para mudar depois em Config.'))),
-        listaExistente),
-      acoes: [{
-        label: 'Começar',
-        classe: 'btn--primario',
-        onclick: async () => {
-          if (!nome.value.trim() || !email.value.trim()) {
-            toast('Preencha nome e e-mail.', 'erro');
-            return false;
-          }
-          const p = await criarPerfil({
-            nome: nome.value.trim(),
-            email: email.value.trim(),
-            papel: papel.value,
-          });
-          await definirPerfilAtual(p.id);
-          resolve(p);
-          return true;
-        },
-      }],
-    });
-  });
-}
-
-/* ═══════════════ Shell ═══════════════ */
+/* ═══════════════ Casca ═══════════════ */
 
 function itemRail(n, extra) {
   return h('a', {
@@ -111,12 +59,13 @@ function montarShell() {
       h('img', { src: 'icons/icon-192.png', alt: '', width: '32', height: '32' })),
     h('div', { class: 'rail__itens' },
       NAV_TOPO.map((n) => itemRail(n, n.rota === 'fila' ? badgeFila : null))),
-    h('div', { class: 'rail__base' }, NAV_BASE.map((n) => itemRail(n))));
+    h('div', { class: 'rail__base' },
+      NAV_BASE.filter((n) => !n.soGestor || ctxApp.ehGestor).map((n) => itemRail(n))));
 
   // busca global: manda o texto para a lista de leads (que já busca nome, CNPJ, telefone, cidade…)
   const campoBusca = h('input', {
     type: 'search', id: 'busca-global', placeholder: 'Buscar leads, CNPJ, telefone…  ( / )',
-    'aria-label': 'Buscar em todos os seus leads', autocomplete: 'off',
+    'aria-label': 'Buscar nos seus leads', autocomplete: 'off',
   });
   const busca = h('form', {
     class: 'topo__busca', role: 'search',
@@ -142,6 +91,8 @@ function montarShell() {
   return { badgeFila };
 }
 
+const ROTULO_PAPEL = { agente: 'Agente', gestor: 'Gestor', admin: 'Administrador' };
+
 /** Redesenha o avatar do topo e o menu do usuário (o menu precisa do perfil atual). */
 async function atualizarChip() {
   const p = ctxApp.perfil;
@@ -150,26 +101,22 @@ async function atualizarChip() {
   chip.replaceChildren(
     avatar(p.nome),
     h('span', { class: 'perfil-chip__nome' }, p.nome),
-    h('span', { class: 'perfil-chip__papel' }, p.papel));
+    h('span', { class: 'perfil-chip__papel' }, ROTULO_PAPEL[p.papel] || p.papel));
   chip.setAttribute('aria-label', `Menu de ${p.nome}`);
 
   const antigo = document.getElementById('menu-usuario');
   const menu = menuSuspenso(chip, [
     {
-      cabecalho: h('div', { class: 'menu__cab-conteudo', style: 'display:flex;gap:10px;align-items:center' },
+      cabecalho: h('div', { style: 'display:flex;gap:10px;align-items:center' },
         avatar(p.nome, { tamanho: 'grande' }),
-        h('div', {}, h('strong', {}, p.nome), p.email ? h('small', {}, p.email) : null, h('small', {}, p.papel))),
+        h('div', {}, h('strong', {}, p.nome), p.email ? h('small', {}, p.email) : null,
+          h('small', {}, ROTULO_PAPEL[p.papel] || p.papel))),
     },
+    { rotulo: 'Meu perfil', icone: 'usuario', onclick: () => navegar('perfil') },
+    ctxApp.ehGestor ? { rotulo: 'Gestão de contas', icone: 'leads', onclick: () => navegar('contas') } : null,
     { rotulo: 'Configurações', icone: 'admin', onclick: () => navegar('config') },
     { sep: true },
-    {
-      rotulo: 'Trocar de usuário', icone: 'usuario',
-      onclick: async () => {
-        const lista = (await perfis()).filter((x) => x.ativo);
-        const p2 = await pedirPerfil(lista.filter((x) => x.id !== ctxApp.perfil.id));
-        if (p2) location.reload();
-      },
-    },
+    { rotulo: 'Sair', icone: 'sair', perigo: true, onclick: async () => { await sair(); location.reload(); } },
   ]);
   menu.id = 'menu-usuario';
   if (antigo) antigo.replaceWith(menu);
@@ -227,7 +174,7 @@ function prepararInstalacao() {
     evento = null;
   };
 
-  // iOS não tem beforeinstallprompt e apaga o storage após 7 dias se não instalado.
+  // iOS não tem beforeinstallprompt e apaga o storage do site (login incluído) após 7 dias sem uso.
   const ehiOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia('(display-mode: standalone)').matches
     || window.navigator.standalone === true;
@@ -239,9 +186,8 @@ function prepararInstalacao() {
         largura: '460px',
         corpo: h('div', {},
           h('p', { class: 'texto' },
-            'No iOS, o Safari apaga os dados de um site após 7 dias sem acesso — a menos que ele '
-            + 'esteja instalado na Tela de Início. Como esta versão guarda tudo no seu aparelho, '
-            + 'instalar não é opcional.'),
+            'No iOS, o Safari apaga os dados de um site (inclusive o seu login) após 7 dias sem acesso — '
+            + 'a menos que ele esteja instalado na Tela de Início.'),
           h('ol', { class: 'passos' },
             h('li', {}, 'Toque em Compartilhar (o quadrado com a seta)'),
             h('li', {}, 'Escolha "Adicionar à Tela de Início"'),
@@ -259,7 +205,7 @@ function prepararInstalacao() {
 
 function bannerConectividade() {
   const banner = h('div', { class: 'banner-off', hidden: navigator.onLine },
-    'Sem conexão — o app continua funcionando; só o enriquecimento de CNPJ precisa de internet.');
+    'Sem conexão — o WattScout precisa de internet para ler e gravar os dados.');
   const sync = () => { banner.hidden = navigator.onLine; };
   window.addEventListener('online', sync);
   window.addEventListener('offline', sync);
@@ -267,6 +213,9 @@ function bannerConectividade() {
 }
 
 /* ═══════════════ Boot ═══════════════ */
+
+/** O banco ainda não recebeu a migration 0006 (a RPC não existe) — explica em vez de quebrar. */
+const faltaMigration = (e) => /reivindicar_perfil|PGRST202|Could not find the function/i.test(`${e?.message} ${e?.codigo}`);
 
 async function boot() {
   if (location.protocol === 'file:') {
@@ -278,12 +227,45 @@ async function boot() {
   }
 
   await abrir();
-  await semearConcessionarias();
 
-  let perfil = await perfilAtual();
-  if (!perfil) perfil = await pedirPerfil((await perfis()).filter((p) => p.ativo));
+  // ── sessão ──
+  const erroLink = erroNaUrl();
+  const recuperando = emRecuperacao();
+  let sessao = null;
+  try { sessao = await sessaoAtual(); } catch { /* sem sessão utilizável: cai no login */ }
+  limparUrlAuth();
+
+  if (!sessao) {
+    telaLogin({
+      erro: erroLink,
+      aviso: !erroLink && recuperando ? 'O link de recuperação não pôde ser usado aqui. Peça um novo ou entre com a sua senha.' : null,
+    });
+    return;
+  }
+  if (recuperando) { telaNovaSenha(); return; }
+
+  // ── perfil (liga a conta ao perfil existente pelo e-mail, ou cria um pendente) ──
+  let perfil;
+  try {
+    perfil = await perfilAtual();
+  } catch (e) {
+    if (faltaMigration(e)) {
+      throw new Error('O banco ainda não tem a migration 0006_auth_rls.sql. Rode-a no SQL Editor do Supabase (veja SETUP.md) e recarregue.');
+    }
+    await sair();
+    telaLogin({ erro: e.message });
+    return;
+  }
+  if (!perfil.ativo) { telaPendente(perfil); return; }
+
   ctxApp.perfil = perfil;
-  ctxApp.ehGestor = perfil.papel === 'gestor' || perfil.papel === 'admin';
+  ctxApp.ehGestor = ehGestorPapel(perfil.papel);
+  aoSair(() => location.reload()); // sessão encerrada em outra aba ou expirada
+
+  // só gestor escreve em `concessionaria` (RLS); o agente apenas lê o que o gestor já semeou
+  if (ctxApp.ehGestor) {
+    try { await semearConcessionarias(); } catch (e) { console.warn('semear concessionárias:', e.message); }
+  }
 
   const { badgeFila } = montarShell();
   await atualizarChip();
@@ -293,9 +275,9 @@ async function boot() {
 
   ctxApp.recarregarApp = async () => {
     const p = await perfilAtual();
-    if (p) {
+    if (p?.ativo) {
       ctxApp.perfil = p;
-      ctxApp.ehGestor = p.papel === 'gestor' || p.papel === 'admin';
+      ctxApp.ehGestor = ehGestorPapel(p.papel);
       await atualizarChip();
     }
     await renderRota();
@@ -307,6 +289,10 @@ async function boot() {
     atualizarContador(badgeFila);
     return el;
   };
+  // rota de gestor: o banco é quem garante; aqui só evita mostrar uma tela que não funcionaria
+  const soGestor = (fn) => comCtx((params, ctx) => (ctx.ehGestor
+    ? fn(params, ctx)
+    : vazio('Acesso restrito', 'Esta área é só para gestores.')));
 
   registrarRota('fila', comCtx(viewFila));
   registrarRota('conversas', comCtx(viewConversas));
@@ -316,6 +302,8 @@ async function boot() {
   registrarRota('painel', comCtx(viewPainel));
   registrarRota('exportar', comCtx(viewExportar));
   registrarRota('config', comCtx(viewConfig));
+  registrarRota('perfil', comCtx(viewPerfil));
+  registrarRota('contas', soGestor(viewContas));
 
   window.addEventListener('hashchange', renderRota);
   await renderRota();
@@ -336,17 +324,20 @@ async function boot() {
   const usinas = await contar('usina_aneel');
   const leads = await contar('lead');
   if (!usinas && !leads) {
-    toast('Base vazia. Comece importando a planilha atual em Importar.', 'info', 7000);
+    toast(ctxApp.ehGestor
+      ? 'Base vazia. Comece importando a planilha atual em Importar.'
+      : 'Você ainda não tem leads. Um gestor pode distribuir leads para você.', 'info', 7000);
   }
 }
 
 boot().catch((e) => {
   console.error(e);
+  document.body.classList.add('sem-casca');
   document.body.replaceChildren(h('div', { class: 'erro-fatal' },
     h('h1', {}, 'Não consegui iniciar'),
     h('p', {}, e.message),
     h('p', { class: 'texto-fraco' },
-      'Cause comuns: js/supabase-config.js não existe ou está com URL/chave erradas '
+      'Causas comuns: js/supabase-config.js não existe ou está com URL/chave erradas '
       + '(copie de supabase-config.example.js), o vendor/supabase-js-*.umd.js não carregou, '
       + 'ou a CSP está bloqueando a conexão com o Supabase — confira o console.')));
 });

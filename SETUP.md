@@ -3,11 +3,11 @@
 O front-end é **estático** (sem servidor próprio, sem passo de build — abre
 com qualquer servidor HTTP simples), mas os DADOS são reais: `js/db.js` fala
 com um projeto Supabase de verdade via `@supabase/supabase-js` (vendorado em
-`vendor/`, sem CDN). "Login" ainda é escolher/criar um perfil na primeira vez
-que abre — **ainda não há Entra ID configurado** (isso é fase 2, ver seção
-"RLS e o que falta para autenticação real" abaixo) — mas os leads, toques,
-usinas e empresas já são permanentes e compartilhados entre todos os agentes
-e dispositivos, não uma cópia por navegador.
+`vendor/`, sem CDN). O acesso é por **login com e-mail e senha** (Supabase Auth) e o
+isolamento dos dados é feito por **RLS no banco**: cada agente vê só os próprios leads
+e conversas; gestores veem tudo e são os únicos que mudam papéis de conta (seções
+"Login e contas" e "RLS" abaixo). Leads, toques, usinas e empresas são permanentes e
+compartilhados entre os dispositivos de quem tem acesso, não uma cópia por navegador.
 
 O Vercel entra só como HOSPEDAGEM ESTÁTICA (o repo já vem pronto pra isso —
 ver "Deploy no Vercel" abaixo); nada aqui depende das funções server-side dele.
@@ -45,7 +45,9 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    ajusta o que a anterior criou):
    `0001_init.sql` → `0002_fase1_dados_compartilhados.sql` →
    `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql` →
-   `0005_backlog.sql`.
+   `0005_backlog.sql` → `0006_auth_rls.sql` (login e RLS por usuário — **leia a
+   seção "Login e contas" antes de rodar**: depois dela o app antigo, que usava a
+   chave pública sem login, para de funcionar).
    `0003`/`0004` existem porque `empresa`/`lead` ganharam campos (enriquecimento
    de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
    `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
@@ -65,7 +67,7 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 5. **`js/supabase-config.js` já está no repo, committado**, apontando pro
    projeto real da equipe. Isso é deliberado, não descuido: a publishable
    key é pública por design (quem protege é o RLS, não o sigilo dela — ver
-   seção "RLS e o que falta para autenticação real"), e o app não tem passo
+   seção "RLS — como o isolamento funciona"), e o app não tem passo
    de build pra injetar variável de ambiente. Se você commitasse via
    `.gitignore` como uma "config local", o deploy no Vercel por integração
    com GitHub (o caminho mais comum — Vercel clona do git, não lê o disco de
@@ -237,37 +239,80 @@ o PWA na Tela de Início **não se aplicam mais aos dados de negócio** (eles
 não estão no navegador). Ainda vale instalar o app pra melhor experiência
 (ícone, tela cheia), mas não é mais uma questão de perder leads.
 
-## RLS e o que falta para autenticação real
+## Login e contas (Supabase Auth)
 
-`supabase/migrations/0002_fase1_dados_compartilhados.sql` deixa Row Level
-Security **ligada** (o Security Advisor do Supabase não reclama de tabela
-exposta) mas com políticas **abertas** pra `anon`/`authenticated` — a
-publishable key acessa e edita qualquer linha de qualquer tabela. Isso não é
-uma chave vazando (ela é pública por design, vai no bundle do navegador de
-qualquer forma) — é a MESMA ausência de isolamento por usuário que a versão
-100% local já tinha, só que agora sobre dado compartilhado e permanente em
-vez de uma cópia por navegador. "Trocar de perfil" na barra superior continua
-sendo escolha de UI, não login: qualquer pessoa com a URL do app pode virar
-qualquer agente, inclusive gestor.
+O WattScout entra por e-mail e senha. Ordem para ligar:
 
-Isso é fase 1, documentado, não escondido. Fase 2 — real Entra ID (seção 5.6
-do plano original) — exige: app registrado no Azure AD como single-tenant,
-Azure Tenant URL travada em `https://login.microsoftonline.com/<tenant-id>`
-(sem isso o `/common` padrão do Supabase aceita qualquer conta Microsoft do
-mundo), claim `xms_edov` no manifest, SMTP próprio (o embutido do Supabase
-manda só 2 e-mails/hora), Custom Access Token Hook pro papel viajar no JWT, e
-então **substituir as políticas abertas de 0002 por políticas reais** (como
-as que `0001_init.sql` já tem escritas — usam `auth.uid()`/`is_gestor()`,
-foram desenhadas pra isso desde o início, só não foram ativadas porque
-dependem de login de verdade existir). Nada disso dá pra fazer numa sessão de
-agente — precisa do tenant Azure AD de vocês e de um fluxo OAuth interativo
-no navegador de alguém com permissão de admin.
+1. **Painel do Supabase → Authentication → Providers → Email**: ligado, com **"Confirm email" LIGADO**.
+   Sem a confirmação, qualquer pessoa assumiria o perfil de outra só digitando o e-mail dela — a
+   migration 0006 só liga conta a perfil por e-mail **confirmado**.
+2. **Authentication → URL Configuration**: em *Site URL* ponha o endereço do app em produção e, em
+   *Redirect URLs*, adicione `https://SEU-DOMINIO/**` e `http://localhost:8080/**` (para `pnpm dev`).
+   Sem isso os links de confirmação e de "esqueci minha senha" caem na página errada.
+3. **Authentication → SMTP Settings**: configure um SMTP próprio. O envio embutido do Supabase manda
+   pouquíssimos e-mails por hora e a equipe vai esbarrar nele ao criar contas.
+4. (Opcional) **Authentication → Policies**: aumente o tamanho mínimo de senha; o app já exige 8
+   caracteres com letras e números.
+5. **Rode `supabase/migrations/0006_auth_rls.sql`** no SQL Editor e, em seguida, **publique o front** (o
+   deploy é pelo GitHub → Vercel). Entre a migration e o deploy o app antigo fica sem acesso; para uma
+   equipe pequena é questão de minutos — faça fora do horário de uso.
+6. **Rode `supabase/tests/rls_teste.sql`** (SQL Editor): ele monta usuários e leads de mentira, confere
+   o isolamento entre agentes, gestor, conta pendente e `anon`, e termina em ROLLBACK (não deixa nada).
+   Cada linha `ok:` nas mensagens é uma garantia confirmada; qualquer `FALHOU:` aborta.
 
-Quando o Entra ID acontecer: rodar o Security Advisor do Supabase antes de
-qualquer go-live (checklist de armadilhas de RLS na seção 5.5 do plano
-original), e lembrar que redirect URIs do OAuth precisam ser atualizados
-**nos dois lados** (Entra e Supabase → Auth → URL Configuration) sempre que o
-domínio mudar — é o bug mais comum de callback quebrado.
+### Como cada pessoa entra
+
+- **Quem já era agente/gestor** (perfil já existente em `profiles`): cria a conta com o **mesmo e-mail**
+  do cadastro, confirma o e-mail e entra — a carteira de leads e o papel vêm junto, nada se perde.
+  Se o e-mail cadastrado não é o que a pessoa usa, corrija antes:
+  `update public.profiles set email = 'novo@dominio.com' where nome = 'Fulano';`
+- **Quem é novo**: cria a conta, confirma o e-mail e fica em **"Aguardando aprovação"** sem ver dado
+  nenhum até um gestor aprovar em *Gestão de contas*. O gestor também pode **pré-cadastrar** o e-mail
+  com o papel certo; quando a pessoa criar a conta, já entra liberada.
+- **Instalação nova, sem nenhum gestor**: a primeira conta confirmada vira gestor. Se isso não for o
+  que você quer, crie o perfil do gestor em `profiles` antes (com o e-mail dele) e só depois abra o app.
+- **Leads de quem ainda não criou conta** continuam no banco e ficam visíveis só para gestores (que
+  podem redistribuí-los) até a pessoa assumir o perfil.
+
+### O que cada papel pode
+
+| | Agente | Gestor / Administrador |
+|---|---|---|
+| Ver leads e conversas | só os próprios | todos |
+| Meu perfil / trocar senha | sim | sim |
+| Aprovar contas, mudar papéis, desativar | não | **sim** (gestão de contas) |
+| Redistribuir leads entre agentes | não | sim |
+| Importar a base ANEEL, editar backlog e distribuidoras | não | sim |
+| Backup, restaurar e apagar tudo | não | sim |
+
+O papel de uma conta só muda pelas funções `alterar_papel` / `definir_ativo` (ficam registradas na tabela
+`perfil_auditoria`), o banco recusa mudar o papel por qualquer outro caminho e **nunca deixa o sistema
+sem um gestor ativo**.
+
+### Limitações conhecidas
+
+- Os links do e-mail usam PKCE: **abra-os no mesmo navegador** em que pediu o cadastro ou a recuperação.
+  Em outro aparelho o e-mail fica confirmado, mas é preciso entrar com a senha (ou pedir novo link).
+- Não há login social nem Entra ID — só e-mail e senha. Entra ID continua possível no futuro (a
+  `reivindicar_perfil` liga qualquer conta do Supabase Auth pelo e-mail).
+
+## RLS — como o isolamento funciona
+
+`0006_auth_rls.sql` troca as políticas abertas de `0002` por políticas reais e revoga todo acesso de
+`anon`. A chave publicável continua pública no bundle (é assim por design), mas sozinha ela não lê
+nenhuma tabela: é preciso estar logado **e** aprovado.
+
+- `lead`: dono ou gestor. `interacao` (as conversas): só de leads que a pessoa enxerga.
+- `import_lote`: de quem criou ou gestor. `profiles`: a própria linha (gestor vê todas).
+- `empresa`, `usina_aneel`, `concessionaria`, `backlog`, `supressao`: leitura para contas ativas;
+  escrita da base ANEEL/distribuidoras/backlog só do gestor.
+- **Dedup entre agentes** sem vazar leads alheios: as funções `checar_duplicados` e `cnpjs_com_lead`
+  respondem só "essa chave já existe" (e se é sua), nunca de quem é nem o conteúdo.
+- **Opt-out (LGPD)** vale para a carteira inteira: um gatilho no banco marca como descartado o lead
+  correspondente de **qualquer** agente quando uma supressão é registrada.
+
+Se algo der errado logo após a migration, o arquivo traz no fim um bloco **ROLLBACK** comentado que
+volta ao modelo aberto anterior (use só em emergência: ele reabre os dados para quem tem a chave).
 
 ## Segurança — o que já está feito e o que fica com quem hospeda
 
@@ -373,11 +418,13 @@ wattscout/
 ├─ etl/amostras/                    # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
 ├─ test/                            # node --test — cobre util/parse/aneel contra dado real
 ├─ supabase/
-│  ├─ migrations/0001_init.sql      # schema base — RLS com auth.uid()/is_gestor(), pronta pra fase 2
-│  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta pra rodar sem Entra ID (fase 1, atual)
+│  ├─ migrations/0001_init.sql      # schema base (as políticas daqui foram substituídas por 0006)
+│  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta (fase 1) — substituída por 0006
 │  ├─ migrations/0003_colunas_faltantes.sql            # colunas de empresa que 0001 não previu
 │  ├─ migrations/0004_lead_razao_social.sql            # idem, pra lead
 │  ├─ migrations/0005_backlog.sql                      # tabela backlog (consumo por distribuidora sem usina)
+│  ├─ migrations/0006_auth_rls.sql                     # login (Supabase Auth) + RLS por usuário + gestão de contas
+│  ├─ tests/rls_teste.sql            # prova o isolamento (monta usuários de mentira, termina em ROLLBACK)
 │  └─ seed.sql                       # concessionárias + carga inicial do backlog
 └─ doc/LIA-legitimo-interesse.md
 ```

@@ -12,7 +12,7 @@ import {
 } from '../util.js';
 import { UFS, TIPOS_GERACAO } from '../seed.js';
 import {
-  todos, buscarTop, buscarLeads, criarLead, carregarSupressao, contar, agregarEmpresas,
+  todos, buscarTop, cnpjsComLead, criarLead, carregarSupressao, contar, agregarEmpresas,
 } from '../db.js';
 import {
   cabecalhoPagina, tabela, vazio, toast, kpi, badge, perguntar, confirmar, barraProgresso, card,
@@ -56,7 +56,8 @@ export async function viewDescobrir(params, ctxApp) {
   const concessionarias = await todos('concessionaria');
   const mapaConc = new Map(concessionarias.map((c) => [c.codigo, c.nome]));
   const totalEmpresas = await contar('empresa');
-  const leadsAtivos = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
+  // CNPJs que já têm lead em QUALQUER carteira (o RLS esconde os leads dos colegas; a RPC devolve só o CNPJ)
+  const leadsAtivos = await cnpjsComLead();
   const supressao = await carregarSupressao();
 
   // uf/conc podem vir pré-selecionados pela URL (#/descobrir?conc=ENEL-SP) —
@@ -279,7 +280,7 @@ export async function viewDescobrir(params, ctxApp) {
     }
 
     const sup = await carregarSupressao();
-    const jaLead = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
+    const jaLead = await cnpjsComLead();
     let criados = 0, pulados = 0, suprimidos = 0;
 
     for (let i = 0; i < escolhidos.length; i++) {
@@ -287,22 +288,31 @@ export async function viewDescobrir(params, ctxApp) {
       if (jaLead.has(e.cnpj)) { pulados++; continue; }
       if (sup.testar({ cnpj: e.cnpj, telefone: e.telefone1, email: e.email })) { suprimidos++; continue; }
       const owner = distribuir ? rodizio[criados % rodizio.length].id : destino;
-      await criarLead({
-        cnpj: e.cnpj,
-        razao_social: e.razao_social,
-        origem: 'aneel',
-        origem_detalhe: `Descobrir · ${e.qtd_usinas} usina(s) · ${fmtPotencia(e.potencia_total_kw)}`,
-        telefone: e.telefone1 || null,
-        telefone2: e.telefone2 || null,
-        email: e.email || null,
-        owner_id: owner,
-        concessionaria_codigo: (e.distribuidoras || [])[0] || null,
-        potencia_kwp: e.potencia_total_kw ?? null,
-        cep: e.cep || null,
-        cidade: e.municipio_principal || null,
-        uf: e.uf_principal || null,
-        proxima_acao_em: hojeISO(),
-      });
+      // distribuidora: só vira código se existir no cadastro (FK); senão guarda o texto bruto
+      const primeiraConc = (e.distribuidoras || [])[0] || null;
+      try {
+        await criarLead({
+          cnpj: e.cnpj,
+          razao_social: e.razao_social,
+          origem: 'aneel',
+          origem_detalhe: `Descobrir · ${e.qtd_usinas} usina(s) · ${fmtPotencia(e.potencia_total_kw)}`,
+          telefone: e.telefone1 || null,
+          telefone2: e.telefone2 || null,
+          email: e.email || null,
+          owner_id: owner,
+          concessionaria_codigo: primeiraConc && mapaConc.has(primeiraConc) ? primeiraConc : null,
+          concessionaria_raw: primeiraConc && !mapaConc.has(primeiraConc) ? primeiraConc : null,
+          potencia_kwp: e.potencia_total_kw ?? null,
+          cep: e.cep || null,
+          cidade: e.municipio_principal || null,
+          uf: e.uf_principal || null,
+          proxima_acao_em: hojeISO(),
+        });
+      } catch (err) {
+        // 23505 = alguém criou lead para esse CNPJ no meio do caminho (índice único): não é erro, é duplicado
+        if (err.codigo === '23505') { pulados++; jaLead.add(e.cnpj); continue; }
+        throw err;
+      }
       jaLead.add(e.cnpj);
       leadsAtivos.add(e.cnpj);
       criados++;

@@ -34,7 +34,8 @@ export async function viewImportar(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
 
   const estado = {
-    modo: params.modo === 'aneel' ? 'aneel' : 'lead',
+    // a base da ANEEL escreve em `usina_aneel`, que só o gestor pode gravar (RLS)
+    modo: params.modo === 'aneel' && ehGestor ? 'aneel' : 'lead',
     fonteTipo: 'colagem',   // colagem | planilha | extensao
     nomeArquivoOrigem: null,
     linhas: [],
@@ -106,11 +107,13 @@ export async function viewImportar(params, ctxApp) {
       if (f) abrirArquivo(f);
     });
 
-    const abasModo = pills(
-      [{ v: 'lead', label: 'Leads / planilha' }, { v: 'aneel', label: 'Base da ANEEL' }],
-      estado.modo,
-      (v) => { estado.modo = v; desenhar(); },
-    );
+    const abasModo = ehGestor
+      ? pills(
+        [{ v: 'lead', label: 'Leads / planilha' }, { v: 'aneel', label: 'Base da ANEEL' }],
+        estado.modo,
+        (v) => { estado.modo = v; desenhar(); },
+      )
+      : null;
 
     const recurso = (r, tipoAmostra) => h('div', { class: 'recurso' },
       h('div', { class: 'recurso__texto' },
@@ -390,7 +393,17 @@ export async function viewImportar(params, ctxApp) {
   }
 
   async function analisarLeads(brutos) {
-    const cache = await cacheDedup();
+    // chaves do arquivo: o banco diz quais já estão na carteira de OUTRO agente (o RLS esconde os leads dele)
+    const candidatos = { cnpjs: [], fones: [], emails: [] };
+    for (const b of brutos) {
+      const c = normCnpj(b.cnpj);
+      const fk = foneKey(normFone(b.telefone));
+      const em = normEmail(b.email);
+      if (c) candidatos.cnpjs.push(c);
+      if (fk) candidatos.fones.push(fk);
+      if (em) candidatos.emails.push(em);
+    }
+    const cache = await cacheDedup(candidatos);
     const supressao = await carregarSupressao();
     const porNome = new Map(perfis.map((p) => [slug(p.nome), p.id]));
     const porEmail = new Map(perfis.map((p) => [p.email, p.id]));
@@ -481,7 +494,9 @@ export async function viewImportar(params, ctxApp) {
           item.veredito = 'duplicado';
           item.dup = dup.lead;
           item.dupPor = dup.por;
-          item.detalhe = `dono ${nomeDe(dup.lead.owner_id)} · ${statusLabel(dup.lead.status)}`;
+          item.detalhe = dup.lead.alheio
+            ? 'já está na carteira de outro agente'
+            : `dono ${nomeDe(dup.lead.owner_id)} · ${statusLabel(dup.lead.status)}`;
         } else if (noLote != null) {
           item.veredito = 'duplicado_lote';
           item.detalhe = `igual à linha ${noLote + 1} deste mesmo arquivo`;
@@ -619,8 +634,9 @@ export async function viewImportar(params, ctxApp) {
     const cont = {};
     for (const i of itens) cont[i.veredito] = (cont[i.veredito] || 0) + 1;
 
+    // duplicado de OUTRO agente nunca é mesclado nem recriado: o lead não é do usuário
     const aproveitaveis = itens.filter((i) => i.veredito === 'novo'
-      || (i.veredito === 'duplicado' && estado.acaoDup !== 'ignorar'));
+      || (i.veredito === 'duplicado' && !i.dup?.alheio && estado.acaoDup !== 'ignorar'));
 
     const colunas = tipo === 'lead'
       ? [
@@ -749,6 +765,8 @@ export async function viewImportar(params, ctxApp) {
               const novo = await criarLead({ ...it.lead, import_lote_id: null });
               await talvezHistorico(novo, it);
               resumo.criados++;
+            } else if (it.veredito === 'duplicado' && it.dup?.alheio) {
+              resumo.duplicados++;
             } else if (it.veredito === 'duplicado' && estado.acaoDup === 'mesclar') {
               await mesclar(it);
               resumo.mesclados++;

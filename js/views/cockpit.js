@@ -52,6 +52,8 @@ function montarURL(tpl, ctx) {
  */
 export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMudar }) {
   let atual = lead;
+  // só gestor transfere lead para outro agente (RLS: o agente não pode mudar o dono)
+  const ehGestorCk = perfil.papel === 'gestor' || perfil.papel === 'admin';
 
   const [empresa, conc, links, tplScript, perfis] = await Promise.all([
     atual.cnpj ? get('empresa', atual.cnpj) : null,
@@ -322,7 +324,7 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
     /* ── Rodapé de ações menos usadas ── */
     const rodape = h('div', { class: 'cockpit__rodape' },
       h('button', { class: 'btn btn--mini', onclick: editarLead }, 'Editar dados'),
-      h('button', { class: 'btn btn--mini', onclick: trocarDono }, 'Trocar dono'),
+      ehGestorCk ? h('button', { class: 'btn btn--mini', onclick: trocarDono }, 'Trocar dono') : null,
       h('button', { class: 'btn btn--mini btn--perigo-fraco', onclick: registrarOptOut }, 'Registrar opt-out'),
       h('span', { class: 'cockpit__id' }, `id ${atual.id.slice(0, 8)}`));
 

@@ -5,12 +5,12 @@ import {
 } from '../util.js';
 import { SCRIPT_PADRAO, PLACEHOLDERS, CONCESSIONARIAS, renderScript } from '../seed.js';
 import {
-  todos, get, put, remover, getConfig, setConfig, criarPerfil, definirPerfilAtual,
+  todos, get, put, remover, getConfig, setConfig,
   suprimir, semearConcessionarias, invalidarAliases, exportarBackup, importarBackup,
   apagarTudo, contar,
 } from '../db.js';
 import {
-  cabecalhoPagina, card, toast, confirmar, perguntar, tabela, badge, kpi, vazio,
+  cabecalhoPagina, card, toast, confirmar, perguntar, tabela, badge, kpi, vazio, navegar,
 } from '../ui.js';
 import { LINKS_PADRAO } from './cockpit.js';
 import { lerArquivo } from '../parse.js';
@@ -19,8 +19,8 @@ export async function viewConfig(params, ctxApp) {
   const { perfil, ehGestor, recarregarApp } = ctxApp;
   const raiz = h('div', { class: 'pagina' });
 
-  const [perfis, concessionarias, lotes, supressoes, tpl, links] = await Promise.all([
-    todos('profiles'), todos('concessionaria'), todos('import_lote'), todos('supressao'),
+  const [concessionarias, lotes, supressoes, tpl, links] = await Promise.all([
+    todos('concessionaria'), todos('import_lote'), todos('supressao'),
     getConfig('script_template', SCRIPT_PADRAO), getConfig('links_externos', LINKS_PADRAO),
   ]);
 
@@ -74,104 +74,19 @@ export async function viewConfig(params, ctxApp) {
         onclick: () => { areaScript.value = SCRIPT_PADRAO; atualizarPreview(); },
       }, 'Restaurar padrão')));
 
-  /* ═══════════ Agentes ═══════════ */
+  /* ═══════════ Pessoas e papéis ═══════════ */
+  // Contas, papéis e aprovações vivem em "Gestão de contas" (views/contas.js). O antigo card daqui
+  // deixava qualquer um "entrar como" outro agente e escolher o próprio papel — sem login, sem trava.
 
-  const areaPerfis = h('div', {});
-  function desenharPerfis(lista) {
-    areaPerfis.replaceChildren(tabela({
-      colunas: [
-        {
-          titulo: 'Nome',
-          render: (p) => h('div', { class: 'cel-principal' },
-            h('strong', {}, p.nome),
-            h('span', {}, p.email)),
-        },
-        {
-          titulo: 'Papel',
-          largura: '140px',
-          render: (p) => badge(p.papel, p.papel === 'agente' ? 'azul' : 'roxo'),
-        },
-        {
-          titulo: 'Situação',
-          largura: '110px',
-          render: (p) => (p.ativo ? badge('ativo', 'verde') : badge('inativo', 'cinza')),
-        },
-        {
-          titulo: '',
-          largura: '250px',
-          render: (p) => h('div', { class: 'linha-botoes linha-botoes--fina' },
-            h('button', {
-              class: 'btn btn--mini',
-              disabled: !ehGestor,
-              onclick: async () => {
-                const r = await perguntar('Editar agente', [
-                  { campo: 'nome', label: 'Nome', valor: p.nome, obrigatorio: true },
-                  { campo: 'email', label: 'E-mail', valor: p.email, obrigatorio: true },
-                  {
-                    campo: 'papel', label: 'Papel', tipo: 'select', valor: p.papel,
-                    opcoes: [{ v: 'agente', label: 'agente' }, { v: 'gestor', label: 'gestor' }, { v: 'admin', label: 'admin' }],
-                    ajuda: 'Gestor enxerga a carteira de todo mundo.',
-                  },
-                ]);
-                if (!r) return;
-                await put('profiles', { ...p, ...r, email: r.email.toLowerCase() });
-                toast('Agente atualizado.', 'ok');
-                recarregarApp();
-              },
-            }, 'Editar'),
-            h('button', {
-              class: 'btn btn--mini',
-              disabled: !ehGestor || p.id === perfil.id,
-              onclick: async () => {
-                await put('profiles', { ...p, ativo: !p.ativo });
-                toast(p.ativo ? 'Agente desativado.' : 'Agente reativado.', 'ok');
-                recarregarApp();
-              },
-            }, p.ativo ? 'Desativar' : 'Reativar'),
-            p.id !== perfil.id
-              ? h('button', {
-                class: 'btn btn--mini btn--fantasma',
-                onclick: async () => {
-                  await definirPerfilAtual(p.id);
-                  toast(`Agora você está como ${p.nome}.`, 'ok');
-                  recarregarApp();
-                },
-              }, 'Entrar como')
-              : badge('você', 'verde')),
-        },
-      ],
-      linhas: lista,
-      aoAbrir: () => {},
-    }));
-  }
-  desenharPerfis(perfis);
-
-  const cardPerfis = card(
-    h('div', { class: 'card__cabeca' },
-      h('h2', {}, 'Agentes e papéis'),
-      h('button', {
-        class: 'btn btn--mini btn--primario',
-        onclick: async () => {
-          const r = await perguntar('Novo agente', [
-            { campo: 'nome', label: 'Nome', obrigatorio: true },
-            { campo: 'email', label: 'E-mail corporativo', obrigatorio: true },
-            {
-              campo: 'papel', label: 'Papel', tipo: 'select', valor: 'agente',
-              opcoes: [{ v: 'agente', label: 'agente' }, { v: 'gestor', label: 'gestor' }],
-            },
-          ]);
-          if (!r) return;
-          await criarPerfil(r);
-          toast('Agente criado.', 'ok');
-          recarregarApp();
-        },
-      }, '+ Novo agente')),
-    h('p', { class: 'aviso' },
-      'Nesta versão autocontida não há login: o "perfil atual" é uma escolha local, e cada '
-      + 'navegador tem sua própria base. No plano original isto vira Entra ID + RLS no Supabase, '
-      + 'onde o agente realmente não consegue ler o lead do colega. Está detalhado no SETUP.md.'),
-    areaPerfis);
-
+  const cardContas = card(
+    h('div', { class: 'card__cabeca' }, h('h2', {}, 'Pessoas e papéis')),
+    h('p', { class: 'texto-fraco' }, ehGestor
+      ? 'Aprovar acessos, mudar papéis (agente, gestor, administrador) e desativar contas fica em Gestão de contas.'
+      : 'Quem libera acessos e define papéis são os gestores. Você vê apenas os seus leads e as suas conversas.'),
+    ehGestor
+      ? h('div', { class: 'linha-botoes' },
+        h('button', { class: 'btn btn--primario', onclick: () => navegar('contas') }, 'Abrir gestão de contas'))
+      : null);
   /* ═══════════ Supressão ═══════════ */
 
   const areaSup = h('div', {});
@@ -299,6 +214,7 @@ export async function viewConfig(params, ctxApp) {
     h('div', { class: 'linha-botoes' },
       h('button', {
         class: 'btn btn--fantasma',
+        disabled: !ehGestor,
         onclick: async () => {
           const ok = await confirmar('Recarregar concessionárias',
             'Regrava a lista padrão por cima da atual. Códigos e aliases voltam ao original.');
@@ -371,6 +287,7 @@ export async function viewConfig(params, ctxApp) {
     h('div', { class: 'linha-botoes' },
       h('button', {
         class: 'btn btn--primario',
+        disabled: !ehGestor,
         onclick: async () => {
           const dump = await exportarBackup();
           baixar(new Blob([JSON.stringify(dump)], { type: 'application/json' }),
@@ -378,7 +295,7 @@ export async function viewConfig(params, ctxApp) {
           toast('Backup gerado.', 'ok');
         },
       }, 'Exportar backup (JSON)'),
-      h('button', { class: 'btn', onclick: () => inputBackup.click() }, 'Restaurar backup'),
+      h('button', { class: 'btn', disabled: !ehGestor, onclick: () => inputBackup.click() }, 'Restaurar backup'),
       inputBackup),
     ehGestor
       ? h('div', { class: 'zona-perigo' },
@@ -389,9 +306,9 @@ export async function viewConfig(params, ctxApp) {
           class: 'btn btn--perigo btn--mini',
           onclick: async () => {
             const ok = await confirmar('Apagar TODOS os dados — de todo mundo, agora',
-              'Isso apaga leads, interações, usinas, empresas, supressão e perfis do banco '
+              'Isso apaga leads, interações, usinas, empresas e supressão do banco '
               + 'Supabase compartilhado — não é uma cópia local, afeta TODA a equipe '
-              + 'imediatamente, em qualquer dispositivo. Não dá pra desfazer. Exporte o backup antes.',
+              + 'imediatamente, em qualquer dispositivo. As contas de login são preservadas. Não dá pra desfazer. Exporte o backup antes.',
               { ok: 'Apagar tudo, pra todo mundo', perigo: true });
             if (!ok) return;
             const conf = await perguntar('Confirme digitando', [{
@@ -406,25 +323,23 @@ export async function viewConfig(params, ctxApp) {
 
   /* ═══════════ Sobre / lacunas ═══════════ */
 
-  const cardSobre = card('O que esta versão não faz (e por quê)',
+  const cardSobre = card('Limites e garantias',
     h('ul', { class: 'lista-check' },
       h('li', {}, h('strong', {}, 'Não dispara mensagem. '),
         'Nem WhatsApp, nem e-mail em massa — decisão de produto, não limitação. Protege o número '
         + 'oficial de atendimento e reduz a exposição de LGPD.'),
       h('li', {}, h('strong', {}, 'Não raspa Casa dos Dados nem CNPJ Biz. '),
         'Ambos atrás de Cloudflare; scraping quebra ToS. Viram links de pesquisa pontual no cockpit.'),
-      h('li', {}, h('strong', {}, 'Não tem login nem RLS por usuário — ainda. '),
-        'Os dados já são reais e compartilhados no Supabase (fase 1), mas sem Entra ID '
-        + 'configurado não há como um agente ser impedido de ler o lead do colega: a '
-        + 'publishable key abre tudo, de propósito (ver 0002_fase1_dados_compartilhados.sql). '
-        + 'A separação por dono aqui é organização, não segurança — Entra ID é o próximo passo.'),
+      h('li', {}, h('strong', {}, 'Cada agente só vê o que é dele. '),
+        'Leads e conversas de um agente não aparecem para os colegas; gestores veem tudo. '
+        + 'Isso é garantido pelo banco (RLS, migration 0006), não apenas escondido na tela.'),
       h('li', {}, h('strong', {}, 'Não ingere os 4,6 milhões de linhas da ANEEL. '),
         'Isso é trabalho de ETL fora do navegador. Importe recortes por UF/distribuidora.')));
 
   raiz.append(
-    cabecalhoPagina('Admin › Configuração', 'Script, agentes, supressão, links e operação'),
+    cabecalhoPagina('Admin › Configuração', 'Script, supressão, links e operação'),
     cardScript,
-    cardPerfis,
+    cardContas,
     cardSup,
     cardLinks,
     cardConc,
