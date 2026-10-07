@@ -6,3 +6,8 @@
 .DS_Store
 *.log
 node_modules/
+
+# Servidor MCP da base de CNPJ, suas dependências e testes — não fazem parte do app estático
+mcp/
+.mcp.json
+supabase/tests/

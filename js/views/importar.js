@@ -20,8 +20,9 @@ import {
 } from '../parse.js';
 import {
   todos, get, put, criarLead, salvarLead, cacheDedup, carregarSupressao, registrarLote,
-  casarConcessionaria, agregarEmpresas, putMuitos, registrarInteracao,
+  casarConcessionaria, agregarEmpresas, putMuitos, registrarInteracao, empresasPorCnpj,
 } from '../db.js';
+import { CAMPOS_CNPJ, linhaParaEmpresa, ehEmpresarioIndividual } from '../cnpj-importacao.js';
 import {
   cabecalhoPagina, card, tabela, toast, vazio, badge, kpi, barraProgresso, confirmar, pills,
 } from '../ui.js';
@@ -35,7 +36,7 @@ export async function viewImportar(params, ctxApp) {
 
   const estado = {
     // a base da ANEEL escreve em `usina_aneel`, que só o gestor pode gravar (RLS)
-    modo: params.modo === 'aneel' && ehGestor ? 'aneel' : 'lead',
+    modo: params.modo === 'aneel' && ehGestor ? 'aneel' : (params.modo === 'cnpj' ? 'cnpj' : 'lead'),
     fonteTipo: 'colagem',   // colagem | planilha | extensao
     nomeArquivoOrigem: null,
     linhas: [],
@@ -46,6 +47,11 @@ export async function viewImportar(params, ctxApp) {
     ownerPadrao: perfil.id,
     origemPadrao: 'planilha_legada',
     nomeLista: '',          // nome da lista criada pela importação de leads (vazio = nome do arquivo)
+    // modo "Base CNPJ" (dados abertos da Receita)
+    criarLeads: false,      // além de gravar a empresa, cria um lead para as novas
+    soAtivas: true,         // ignora CNPJ com situação diferente de Ativa
+    incluirEI: false,       // empresário individual = pessoa física: fora por padrão (LIA)
+    competencia: '',        // mês da base da Receita (AAAA-MM), só informativo
     analise: null,
   };
 
@@ -62,7 +68,7 @@ export async function viewImportar(params, ctxApp) {
   const raiz = h('div', { class: 'pagina' });
   const areaEtapas = h('div', {});
 
-  const campos = () => (estado.modo === 'aneel' ? CAMPOS_ANEEL : CAMPOS_LEAD);
+  const campos = () => (estado.modo === 'aneel' ? CAMPOS_ANEEL : estado.modo === 'cnpj' ? CAMPOS_CNPJ : CAMPOS_LEAD);
 
   /* ═══════════ Etapa 1 — entrada ═══════════ */
 
@@ -117,13 +123,13 @@ export async function viewImportar(params, ctxApp) {
       if (f) abrirArquivo(f);
     });
 
-    const abasModo = ehGestor
-      ? pills(
-        [{ v: 'lead', label: 'Leads / planilha' }, { v: 'aneel', label: 'Base da ANEEL' }],
-        estado.modo,
-        (v) => { estado.modo = v; desenhar(); },
-      )
-      : null;
+    const abasModo = pills(
+      [{ v: 'lead', label: 'Leads / planilha' },
+        { v: 'cnpj', label: 'Base CNPJ (Receita)' },
+        ...(ehGestor ? [{ v: 'aneel', label: 'Base da ANEEL' }] : [])],
+      estado.modo,
+      (v) => { estado.modo = v; desenhar(); },
+    );
 
     const recurso = (r, tipoAmostra) => h('div', { class: 'recurso' },
       h('div', { class: 'recurso__texto' },
@@ -159,9 +165,16 @@ export async function viewImportar(params, ctxApp) {
           + 'Só o recorte PJ é usado — titulares PF vêm mascarados pela própria ANEEL e não '
           + 'devem ser reidentificados. O ZIP da GD (110 MB) pode ser arrastado direto — o app '
           + 'filtra PJ e descompacta em streaming, sem travar a aba.')
-        : h('p', { class: 'texto-fraco' },
-          'Vira `lead` + histórico. A planilha atual entra aqui: as 10 colunas são reconhecidas '
-          + 'automaticamente e a "Descrição do contato" vira o primeiro toque do histórico.')),
+        : estado.modo === 'cnpj'
+          ? h('p', { class: 'texto-fraco' },
+            'Cadastro de empresas (CNPJ, CNAE, porte, sócios, contatos) a partir dos dados abertos da '
+            + 'Receita Federal — o mesmo conjunto que sites como o Casa dos Dados exibem. Grava em `empresa` '
+            + 'sem apagar o que já existe e, se quiser, cria os leads. O arquivo vem do servidor MCP '
+            + '(`mcp/`, ferramenta cnpj_exportar) ou de qualquer CSV/XLSX com colunas parecidas. '
+            + 'Empresário individual (pessoa física) fica de fora por padrão.')
+          : h('p', { class: 'texto-fraco' },
+            'Vira `lead` + histórico. A planilha atual entra aqui: as 10 colunas são reconhecidas '
+            + 'automaticamente e a "Descrição do contato" vira o primeiro toque do histórico.')),
       painelRecursos,
       h('div', { class: 'grade-2 grade-2--larga' },
         card('1. Colar tabela',
@@ -365,6 +378,34 @@ export async function viewImportar(params, ctxApp) {
           })()))
       : null;
 
+    const marca = (rot, chave, ajuda) => h('label', { class: 'chk', title: ajuda || '' },
+      h('input', {
+        type: 'checkbox', checked: !!estado[chave],
+        onchange: (e) => { estado[chave] = e.target.checked; estado.analise = null; desenhar(); },
+      }), rot);
+    const opcoesCnpj = estado.modo === 'cnpj'
+      ? h('div', { class: 'filtros filtros--chk' },
+        marca('Só empresas ativas', 'soAtivas', 'Ignora CNPJ baixado, suspenso ou inapto'),
+        marca('Incluir empresário individual (pessoa física)', 'incluirEI', 'Não recomendado: a razão social é o nome de uma pessoa'),
+        marca('Criar leads para as empresas novas', 'criarLeads', 'Cada empresa nova vira um lead na lista desta importação'),
+        estado.criarLeads
+          ? h('label', { class: 'campo campo--linha' },
+            h('span', { class: 'rot-mini' }, 'Dono dos leads'),
+            (() => {
+              const sel = h('select', { disabled: !ehGestor }, perfis.map((p) =>
+                h('option', { value: p.id, selected: p.id === estado.ownerPadrao }, p.nome)));
+              sel.addEventListener('change', () => { estado.ownerPadrao = sel.value; estado.analise = null; });
+              return sel;
+            })())
+          : null,
+        h('label', { class: 'campo campo--linha' },
+          h('span', { class: 'rot-mini' }, 'Mês da base (AAAA-MM)'),
+          h('input', {
+            type: 'text', value: estado.competencia, placeholder: '2026-09', maxlength: '7', class: 'inp-num',
+            oninput: (e) => { estado.competencia = e.target.value.trim(); estado.analise = null; },
+          })))
+      : null;
+
     return card(
       h('div', { class: 'card__cabeca' },
         h('h2', {}, 'Conferir o mapeamento'),
@@ -385,6 +426,7 @@ export async function viewImportar(params, ctxApp) {
             'Recomeçar'))),
       grade,
       opcoesLead,
+      opcoesCnpj,
       h('details', { class: 'extra' }, h('summary', {}, 'Ver as 5 primeiras linhas do arquivo'), amostra),
       h('div', { class: 'linha-botoes' },
         h('button', {
@@ -399,7 +441,65 @@ export async function viewImportar(params, ctxApp) {
   async function analisar() {
     const brutos = aplicarMapa(estado.linhas, estado.mapa);
     if (estado.modo === 'aneel') return analisarAneel(brutos);
+    if (estado.modo === 'cnpj') return analisarCnpj(brutos);
     return analisarLeads(brutos);
+  }
+
+  /**
+   * Base CNPJ: cada linha vira uma `empresa`. Veredito: NOVO (não existia), ATUALIZA (já existia — o
+   * upsert só escreve o que veio preenchido), ou fora (sem CNPJ, repetido, opt-out, pessoa física,
+   * não ativa). Contato (telefone/e-mail) em opt-out é descartado, como no enriquecimento.
+   */
+  async function analisarCnpj(brutos) {
+    const supressao = await carregarSupressao();
+    const conv = brutos.map((b) => ({ b, r: linhaParaEmpresa(b, { competencia: estado.competencia || undefined }) }));
+    const cnpjs = conv.map(({ r }) => r.empresa?.cnpj).filter(Boolean);
+    const existentes = new Set((await empresasPorCnpj(cnpjs)).map((e) => e.cnpj));
+    const cacheLeads = estado.criarLeads ? await cacheDedup({ cnpjs, fones: [], emails: [] }) : null;
+    const vistos = new Map();
+    const itens = [];
+
+    for (const { b, r } of conv) {
+      const item = { _linha: b._linha, bruto: b, erros: [] };
+      itens.push(item);
+      if (r.erro) { item.veredito = 'sem_id'; item.erros.push(r.erro); continue; }
+      const e = r.empresa;
+      item.empresa = e;
+      if (vistos.has(e.cnpj)) {
+        item.veredito = 'duplicado_lote';
+        item.detalhe = `igual à linha ${vistos.get(e.cnpj) + 1} deste mesmo arquivo`;
+        continue;
+      }
+      vistos.set(e.cnpj, b._linha);
+
+      const motivo = supressao.testar({ cnpj: e.cnpj, telefone: e.telefone1, email: e.email });
+      if (motivo === 'cnpj') { item.veredito = 'suprimido'; item.detalhe = 'opt-out registrado por cnpj'; continue; }
+      if (!estado.incluirEI && ehEmpresarioIndividual(e)) {
+        item.veredito = 'pf';
+        item.detalhe = 'empresário individual (pessoa física)';
+        continue;
+      }
+      if (estado.soAtivas && e.situacao_cadastral && e.situacao_cadastral !== 'Ativa') {
+        item.veredito = 'inativa';
+        item.detalhe = `situação: ${e.situacao_cadastral}`;
+        continue;
+      }
+      // contato em opt-out não entra na base (o CNPJ em si pode entrar)
+      const tirados = [];
+      if (e.telefone1 && supressao.testar({ telefone: e.telefone1 })) { delete e.telefone1; tirados.push('telefone'); }
+      if (e.telefone2 && supressao.testar({ telefone: e.telefone2 })) { delete e.telefone2; tirados.push('telefone 2'); }
+      if (e.email && supressao.testar({ email: e.email })) { delete e.email; tirados.push('e-mail'); }
+
+      item.veredito = existentes.has(e.cnpj) ? 'atualiza' : 'novo';
+      const notas = [];
+      if (tirados.length) notas.push(`${tirados.join(' e ')} em opt-out — descartado`);
+      if (estado.criarLeads) {
+        if (cacheLeads.porCnpj.has(e.cnpj)) { item.jaTemLead = true; notas.push('já tem lead — só a empresa é gravada'); }
+        else item.vaiViraLead = true;
+      }
+      if (notas.length) item.detalhe = notas.join(' · ');
+    }
+    return { tipo: 'cnpj', itens };
   }
 
   async function analisarLeads(brutos) {
@@ -637,6 +737,8 @@ export async function viewImportar(params, ctxApp) {
     sem_id: { label: 'SEM IDENTIFICADOR', cor: 'vermelho' },
     suprimido: { label: 'OPT-OUT', cor: 'vermelho' },
     pf: { label: 'PF — IGNORADO', cor: 'cinza' },
+    atualiza: { label: 'ATUALIZA', cor: 'azul' },
+    inativa: { label: 'NÃO ATIVA', cor: 'cinza' },
   };
 
   function etapaPrevia() {
@@ -645,7 +747,7 @@ export async function viewImportar(params, ctxApp) {
     for (const i of itens) cont[i.veredito] = (cont[i.veredito] || 0) + 1;
 
     // duplicado de OUTRO agente nunca é mesclado nem recriado: o lead não é do usuário
-    const aproveitaveis = itens.filter((i) => i.veredito === 'novo'
+    const aproveitaveis = itens.filter((i) => i.veredito === 'novo' || i.veredito === 'atualiza'
       || (i.veredito === 'duplicado' && !i.dup?.alheio && estado.acaoDup !== 'ignorar'));
 
     const colunas = tipo === 'lead'
@@ -666,7 +768,24 @@ export async function viewImportar(params, ctxApp) {
         { titulo: 'Dono', largura: '120px', render: (i) => (i.lead ? nomeDe(i.lead.owner_id) : '—') },
         { titulo: 'Concessionária', largura: '140px', render: (i) => i.lead?.concessionaria_codigo || i.lead?.concessionaria_raw || '—' },
       ]
-      : [
+      : tipo === 'cnpj'
+        ? [
+          {
+            titulo: 'Veredito',
+            largura: '200px',
+            render: (i) => h('div', { class: 'cel-principal' },
+              badge(VEREDITOS[i.veredito]?.label || i.veredito, VEREDITOS[i.veredito]?.cor || 'cinza'),
+              i.detalhe ? h('span', {}, i.detalhe) : null,
+              i.erros.length ? h('span', { class: 'texto-erro' }, i.erros.join(' · ')) : null),
+          },
+          { titulo: 'Razão social', render: (i) => i.empresa?.razao_social || i.bruto.razao_social || '—' },
+          { titulo: 'CNPJ', largura: '145px', render: (i) => maskCnpj(i.empresa?.cnpj || '') || '—' },
+          { titulo: 'Município/UF', largura: '160px', render: (i) => [i.empresa?.municipio_sede, i.empresa?.uf_sede].filter(Boolean).join('/') || '—' },
+          { titulo: 'CNAE', largura: '110px', render: (i) => i.empresa?.cnae_principal || '—' },
+          { titulo: 'Telefone', largura: '130px', render: (i) => maskFone(i.empresa?.telefone1 || '') || '—' },
+          { titulo: 'E-mail', largura: '190px', render: (i) => i.empresa?.email || '—' },
+        ]
+        : [
         {
           titulo: 'Veredito',
           largura: '180px',
@@ -682,7 +801,7 @@ export async function viewImportar(params, ctxApp) {
         { titulo: 'Geração', largura: '110px', render: (i) => TIPOS_GERACAO[i.usina?.tipo_geracao] || i.usina?.tipo_geracao || '—' },
         { titulo: 'Cidade/UF', largura: '150px', render: (i) => [i.usina?.municipio, i.usina?.uf].filter(Boolean).join('/') || '—' },
         { titulo: 'Conexão', largura: '100px', render: (i) => fmtData(i.usina?.dt_conexao) || '—' },
-      ];
+        ];
 
     const rejeitadas = itens.filter((i) => i.veredito === 'sem_id' || i.erros.length);
     const semConc = itens.filter((i) => i.avisoConc).length;
@@ -695,13 +814,18 @@ export async function viewImportar(params, ctxApp) {
           'Voltar ao mapeamento')),
       h('div', { class: 'kpis kpis--fina' },
         kpi('Total de linhas', fmtNum(itens.length)),
-        kpi('Serão criados', fmtNum(aproveitaveis.length)),
+        kpi(tipo === 'cnpj' ? 'Serão gravadas' : 'Serão criados', fmtNum(aproveitaveis.length),
+          tipo === 'cnpj' ? `${fmtNum(cont.novo || 0)} novas · ${fmtNum(cont.atualiza || 0)} atualizam` : null),
+        tipo === 'cnpj'
+          ? kpi('Leads a criar', fmtNum(itens.filter((i) => i.vaiViraLead).length), estado.criarLeads ? 'na lista desta importação' : 'desligado')
+          : null,
         kpi('Já existem', fmtNum((cont.duplicado || 0) + (cont.duplicado_lote || 0)),
           estado.acaoDup === 'ignorar' ? 'serão ignorados' : `ação: ${estado.acaoDup}`),
         kpi('Rejeitados', fmtNum(rejeitadas.length)),
         cont.suprimido ? kpi('Bloqueados por opt-out', fmtNum(cont.suprimido)) : null,
-        cont.pf ? kpi('Titulares PF', fmtNum(cont.pf), 'fora do recorte') : null),
-      tipo === 'lead'
+        cont.pf ? kpi(tipo === 'cnpj' ? 'Empresário individual' : 'Titulares PF', fmtNum(cont.pf), 'fora do recorte') : null,
+        cont.inativa ? kpi('Não ativas', fmtNum(cont.inativa), 'ignoradas') : null),
+      (tipo === 'lead' || (tipo === 'cnpj' && estado.criarLeads))
         ? h('label', { class: 'campo' },
           h('span', {}, 'Nome da lista'),
           h('input', {
@@ -727,7 +851,8 @@ export async function viewImportar(params, ctxApp) {
           class: 'btn btn--primario',
           disabled: aproveitaveis.length === 0 && estado.acaoDup !== 'mesclar',
           onclick: gravar,
-        }, tipo === 'lead' ? `Importar ${fmtNum(aproveitaveis.length)} lead(s)` : `Importar ${fmtNum(aproveitaveis.length)} usina(s)`),
+        }, tipo === 'lead' ? `Importar ${fmtNum(aproveitaveis.length)} lead(s)`
+          : tipo === 'cnpj' ? `Gravar ${fmtNum(aproveitaveis.length)} empresa(s)` : `Importar ${fmtNum(aproveitaveis.length)} usina(s)`),
         rejeitadas.length
           ? h('button', { class: 'btn', onclick: () => baixarRejeitadas(rejeitadas) },
             `Baixar ${fmtNum(rejeitadas.length)} rejeitada(s)`)
@@ -775,6 +900,43 @@ export async function viewImportar(params, ctxApp) {
         prog.atualizar(1, 1, 'agregando empresas por CNPJ…');
         const nEmp = await agregarEmpresas();
         resumo.empresas = nEmp;
+      } else if (tipo === 'cnpj') {
+        const aGravar = itens.filter((i) => i.veredito === 'novo' || i.veredito === 'atualiza');
+        if (estado.criarLeads) {
+          loteLista = await registrarLote({
+            tipo: estado.fonteTipo, agente_id: perfil.id, arquivo: estado.nomeArquivoOrigem,
+            nome: nomeDaLista(), total: itens.length, criados: 0, duplicados: 0, erros: 0,
+          });
+        }
+        const passo = 500;
+        for (let i = 0; i < aGravar.length; i += passo) {
+          await putMuitos('empresa', aGravar.slice(i, i + passo).map((x) => x.empresa));
+          prog.atualizar(Math.min(i + passo, aGravar.length), aGravar.length, `empresas: ${Math.min(i + passo, aGravar.length)}/${aGravar.length}`);
+        }
+        resumo.criados = aGravar.filter((i) => i.veredito === 'novo').length;
+        resumo.mesclados = aGravar.length - resumo.criados;
+        resumo.erros = itens.filter((i) => i.veredito === 'sem_id').length;
+        resumo.duplicados = itens.filter((i) => i.veredito === 'duplicado_lote' || i.jaTemLead).length;
+        resumo.ignorados = itens.filter((i) => ['pf', 'inativa', 'suprimido'].includes(i.veredito)).length;
+        if (loteLista) {
+          let leadsCriados = 0;
+          for (const it of aGravar.filter((x) => x.vaiViraLead)) {
+            const e = it.empresa;
+            try {
+              await criarLead({
+                cnpj: e.cnpj, razao_social: e.razao_social, origem: 'casa_dos_dados',
+                origem_detalhe: `Base CNPJ · ${estado.nomeArquivoOrigem || 'importação'}`,
+                telefone: e.telefone1 || null, telefone2: e.telefone2 || null, email: e.email || null,
+                cidade: e.municipio_sede || null, uf: e.uf_sede || null, cep: e.cep || null,
+                owner_id: estado.ownerPadrao, import_lote_id: loteLista.id, proxima_acao_em: hojeISO(),
+              });
+              leadsCriados++;
+            } catch (err) {
+              if (err.codigo !== '23505') { resumo.erros++; if (amostraErro.length < 10) amostraErro.push({ linha: it._linha + 1, motivo: err.message }); }
+            }
+          }
+          resumo.leads = leadsCriados;
+        }
       } else {
         // a lista nasce antes dos leads: cada um já é criado carimbado com o id dela
         loteLista = await registrarLote({
@@ -827,10 +989,14 @@ export async function viewImportar(params, ctxApp) {
       // modo leads: fecha a lista criada no início com os números finais; ANEEL: registra o log agora
       const lote = loteLista
         ? await put('import_lote', { ...loteLista, ...dadosLote, atualizado_em: new Date().toISOString() })
-        : await registrarLote({ ...dadosLote, nome: `Base ANEEL — ${estado.nomeArquivoOrigem || 'importação'}` });
+        : await registrarLote({
+          ...dadosLote,
+          nome: `${estado.modo === 'cnpj' ? 'Base CNPJ' : 'Base ANEEL'} — ${estado.nomeArquivoOrigem || 'importação'}`,
+        });
 
       fechar();
       const partes = [`${fmtNum(resumo.criados)} criado(s)`];
+      if (resumo.leads) partes.push(`${fmtNum(resumo.leads)} lead(s)`);
       if (resumo.mesclados) partes.push(`${resumo.mesclados} mesclado(s)`);
       if (resumo.duplicados) partes.push(`${resumo.duplicados} duplicado(s)`);
       if (resumo.erros) partes.push(`${resumo.erros} com erro`);
@@ -842,10 +1008,14 @@ export async function viewImportar(params, ctxApp) {
       estado.nomeLista = '';
       desenhar();
       if (estado.modo === 'aneel') setTimeout(() => navegar('descobrir'), 600);
+      else if (estado.modo === 'cnpj') setTimeout(() => (loteLista && resumo.leads
+        ? navegar('leads', { lista: loteLista.id, f: 'meus' })
+        : navegar('descobrir', { sem_usina: '1' })), 600);
       else if (loteLista && resumo.criados) setTimeout(() => navegar('leads', { lista: loteLista.id, f: 'meus' }), 600);
     } catch (e) {
       fechar();
-      toast(`Falha na importação: ${e.message}`, 'erro', 8000);
+      const faltaColuna = /Could not find the .* column of 'empresa'/i.test(e.message);
+      toast(`Falha na importação: ${e.message}${faltaColuna ? ' — falta rodar a migration 0008_empresa_cnpj_aberto.sql no Supabase (veja SETUP.md).' : ''}`, 'erro', 12000);
     }
   }
 

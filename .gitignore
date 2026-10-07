@@ -15,3 +15,9 @@
 
 # Node (não há build, mas por precaução)
 node_modules/
+
+# Base de CNPJ do servidor MCP (mcp/): dados cadastrais em massa — nunca no git nem no deploy
+mcp/dados/
+*.sqlite
+*.sqlite-*
+*.carregando

@@ -67,6 +67,8 @@ export async function viewDescobrir(params, ctxApp) {
     uf: params.uf || '', conc: params.conc || '', geracao: '', porte: '', modalidade: '', fase: '',
     potMin: '', potMax: '', conexaoDe: '', conexaoAte: '',
     comTelefone: false, comEmail: false, semLead: true, texto: '',
+    // a Base CNPJ traz empresas SEM usina; por padrão a lista segue sendo só quem tem usina (ANEEL)
+    soComUsina: params.sem_usina !== '1',
   };
   const selecao = new Set();
 
@@ -108,11 +110,12 @@ export async function viewDescobrir(params, ctxApp) {
     const filtroServidor = (q) => {
       if (filtro.uf) q = q.contains('ufs', [filtro.uf]);
       if (filtro.conc) q = q.overlaps('distribuidoras', valoresDaConc(filtro.conc));
+      if (filtro.soComUsina) q = q.gt('qtd_usinas', 0);
       return q;
     };
     const [carregadas, totalDoFiltro] = await Promise.all([
       buscarTop('empresa', { ordenarPor: 'potencia_total_kw', limite: TETO_CARGA, filtro: filtroServidor }),
-      (filtro.uf || filtro.conc) ? contar('empresa', filtroServidor) : Promise.resolve(totalEmpresas),
+      (filtro.uf || filtro.conc || filtro.soComUsina) ? contar('empresa', filtroServidor) : Promise.resolve(totalEmpresas),
     ]);
     empresas = carregadas;
     totalFiltrado = totalDoFiltro;
@@ -164,7 +167,7 @@ export async function viewDescobrir(params, ctxApp) {
     s.value = filtro[chave] ?? ''; // reflete o que veio da URL / do estado atual
     s.addEventListener('change', async () => {
       filtro[chave] = s.value;
-      if (remoto) sincronizarHash('descobrir', { uf: filtro.uf, conc: filtro.conc });
+      if (remoto) sincronizarHash('descobrir', { uf: filtro.uf, conc: filtro.conc, sem_usina: filtro.soComUsina ? '' : '1' });
       if (remoto) {
         s.disabled = true;
         areaTabela.replaceChildren(h('div', { class: 'carregando' }, 'Buscando…'));
@@ -184,6 +187,18 @@ export async function viewDescobrir(params, ctxApp) {
     const i = h('input', { type: 'date', title: rot });
     i.addEventListener('change', () => { filtro[chave] = i.value; desenhar(); });
     return h('label', { class: 'campo campo--linha' }, h('span', { class: 'rot-mini' }, rot), i);
+  };
+  /** Filtro que muda a consulta ao servidor (não só refiltra o que já veio). */
+  const chkRemoto = (rot, chave, marcado) => {
+    const i = h('input', { type: 'checkbox', checked: marcado });
+    i.addEventListener('change', async () => {
+      filtro[chave] = i.checked;
+      sincronizarHash('descobrir', { uf: filtro.uf, conc: filtro.conc, sem_usina: filtro.soComUsina ? '' : '1' });
+      areaTabela.replaceChildren(h('div', { class: 'carregando' }, 'Buscando…'));
+      try { await recarregar(); } catch (e) { toast(e.message, 'erro', 6000); }
+      desenhar();
+    });
+    return h('label', { class: 'chk', title: 'Desmarque para ver também as empresas importadas da Base CNPJ que não têm usina na ANEEL' }, i, rot);
   };
   const chk = (rot, chave, marcado) => {
     const i = h('input', { type: 'checkbox', checked: marcado });
@@ -210,6 +225,7 @@ export async function viewDescobrir(params, ctxApp) {
       chk('Tem telefone', 'comTelefone', false),
       chk('Tem e-mail', 'comEmail', false),
       chk('Esconder quem já é lead', 'semLead', true),
+      chkRemoto('Só empresas com usina (ANEEL)', 'soComUsina', filtro.soComUsina),
       busca));
 
   /** Mostra o que está filtrando no servidor (UF/distribuidora) — antes não havia sinal nenhum de que
@@ -217,7 +233,9 @@ export async function viewDescobrir(params, ctxApp) {
   const areaFiltroAtivo = h('div', {});
   function desenharFiltroAtivo() {
     const chips = [];
-    const limparRemoto = (chave) => navegar('descobrir', { uf: chave === 'uf' ? '' : filtro.uf, conc: chave === 'conc' ? '' : filtro.conc });
+    const limparRemoto = (chave) => navegar('descobrir', {
+      uf: chave === 'uf' ? '' : filtro.uf, conc: chave === 'conc' ? '' : filtro.conc, sem_usina: filtro.soComUsina ? '' : '1',
+    });
     if (filtro.conc) {
       chips.push(h('span', { class: 'chip' }, `Distribuidora: ${nomeConcFiltro()}`,
         h('button', { class: 'chip-filtro__x', type: 'button', 'aria-label': 'Remover filtro de distribuidora', onclick: () => limparRemoto('conc') }, '×')));
@@ -247,7 +265,7 @@ export async function viewDescobrir(params, ctxApp) {
         h('strong', {}, e.razao_social || '(sem nome)'),
         h('span', {}, maskCnpj(e.cnpj))),
     },
-    { titulo: 'Usinas', largura: '70px', alinha: 'dir', render: (e) => fmtNum(e.qtd_usinas) },
+    { titulo: 'Usinas', largura: '90px', alinha: 'dir', render: (e) => (e.qtd_usinas ? fmtNum(e.qtd_usinas) : badge('sem usina', 'cinza')) },
     {
       titulo: 'Potência total',
       largura: '120px',

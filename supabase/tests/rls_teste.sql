@@ -344,6 +344,26 @@ begin
   raise notice 'ok: gestor reassocia distribuidoras em lotes e a lista de pendentes encolhe';
 end $$;
 
+/* ── 0008: agente grava empresa com as colunas da Base CNPJ; upsert parcial não apaga o que já existe ── */
+do $$
+declare r public.empresa;
+begin
+  perform set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000000a2","role":"authenticated"}', true);
+  set local role authenticated;
+  insert into public.empresa (cnpj, razao_social, telefone1, cnaes_secundarios, matriz, municipio_sede, uf_sede, fonte_cadastro, competencia_cadastro)
+    values ('91000000000001', 'Empresa CNPJ Aberto', '1133334444', array['4321500','4742300'], true, 'Campinas', 'SP', 'receita_federal', '2026-09');
+  -- segundo import, pobre (só razão social): ON CONFLICT atualiza só a coluna enviada
+  insert into public.empresa (cnpj, razao_social) values ('91000000000001', 'Empresa CNPJ Aberto SA')
+    on conflict (cnpj) do update set razao_social = excluded.razao_social;
+  select * into r from public.empresa where cnpj = '91000000000001';
+  reset role;
+  if r.razao_social <> 'Empresa CNPJ Aberto SA' then raise exception 'FALHOU: razão social não atualizou'; end if;
+  if r.telefone1 <> '1133334444' or r.matriz is not true or array_length(r.cnaes_secundarios, 1) <> 2 then
+    raise exception 'FALHOU: o upsert pobre apagou dados já gravados';
+  end if;
+  raise notice 'ok: agente grava empresa com colunas da Base CNPJ e importação pobre não apaga o existente';
+end $$;
+
 /* ── bootstrap: instalação sem nenhum gestor → a primeira conta confirmada vira gestor ── */
 select set_config('request.jwt.claims', '', true);   -- volta a ser o SQL Editor (sem usuário logado)
 update public.profiles set papel = 'agente';          -- zera os gestores

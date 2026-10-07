@@ -48,7 +48,8 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    `0005_backlog.sql` → `0006_auth_rls.sql` (login e RLS por usuário — **leia a
    seção "Login e contas" antes de rodar**: depois dela o app antigo, que usava a
    chave pública sem login, para de funcionar) → `0007_recasar_distribuidoras.sql`
-   (índices e funções para reassociar a distribuidora das usinas — ver "Backlog").
+   (índices e funções para reassociar a distribuidora das usinas — ver "Backlog") →
+   `0008_empresa_cnpj_aberto.sql` (colunas da Base CNPJ — ver "Base CNPJ e servidor MCP").
    `0003`/`0004` existem porque `empresa`/`lead` ganharam campos (enriquecimento
    de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
    `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
@@ -240,6 +241,38 @@ Nada de conversão kWp→kWh nem "% de cobertura por usina": a tela é sobre
 *onde* falta e *quanto* falta em números absolutos, e a priorização em
 Prospecção continua sendo por potência somada da empresa.
 
+## Base CNPJ e servidor MCP (dados abertos da Receita Federal)
+
+O **Casa dos Dados** exibe o cadastro de CNPJ que a **Receita Federal publica todo mês como dado aberto**. O
+WattScout usa essa mesma origem **direto da fonte**, sem raspar o Casa dos Dados (atrás de Cloudflare, com limite
+de plano e termos que proíbem raspagem — por isso o app nunca o fez, ver LIA seção 2-A). Duas peças:
+
+1. **Servidor MCP local** (`mcp/`, ver `mcp/README.md`): baixa os zips da Receita, carrega **já filtrados** (CNAE, UF
+   ou lista de CNPJs; só empresas ativas) num SQLite no seu computador e expõe ferramentas ao Claude para contar,
+   buscar, detalhar e **exportar um CSV**. Pacote separado — o app continua sem dependências de runtime.
+2. **Importar → "Base CNPJ (Receita)"** no app: lê esse CSV (ou qualquer exportação parecida) **sem mapeamento
+   manual** e grava em `empresa` — sem apagar o que já existe (importar um CSV pobre não zera dado enriquecido nem os
+   agregados da ANEEL). Opcionalmente cria os leads das empresas novas, numa lista com nome.
+
+```bash
+pnpm --dir mcp install
+pnpm --dir mcp baixar -- --sem-socios                       # ~5,1 GB de zips da competência mais recente
+pnpm --dir mcp carregar -- --cnae geracao,instalacao --uf SP,MG
+# no Claude (com o servidor wattscout-cnpj aprovado): "exporte as geradoras de SP com telefone"
+```
+
+- **Rode antes** `supabase/migrations/0008_empresa_cnpj_aberto.sql` (colunas `cnaes_secundarios`, `matriz`,
+  `municipio_sede`, `uf_sede`, `fonte_cadastro`, `competencia_cadastro`…). Sem ela a importação avisa qual migration falta.
+- **Prospecção** continua mostrando por padrão só empresas **com usina** (as da ANEEL); desmarque "Só empresas com
+  usina (ANEEL)" para ver as que vieram só da Base CNPJ.
+- **Limites honestos**: não existe CNAE de "energia solar" (usinas se registram em *Geração de energia elétrica*); o
+  dono de uma usina de GD costuma ser de qualquer ramo e só aparece pela ANEEL — use `--cnpjs-arquivo` para cruzar os
+  CNPJs dos donos de usina com o cadastro da Receita. Telefone/e-mail da Receita são, muitas vezes, do contador.
+- **LGPD**: empresário individual/MEI (pessoa física) fica de fora por padrão; CPF de sócio nunca é gravado; a
+  importação aplica o opt-out. `mcp/dados/` não vai para o git nem para o deploy.
+- O arquivo CSV importado é lido inteiro na memória do navegador: exportações de até algumas dezenas de milhares de
+  linhas funcionam bem; para listas maiores, exporte em várias partes (`limite`) ou por UF.
+
 ## Backup
 
 Os dados vivem no Supabase agora — plano Pro faz backup diário automático,
@@ -418,6 +451,8 @@ wattscout/
 ├─ css/wattscout.css                 # sistema visual (casca, componentes) sobre os tokens do Garden
 ├─ vendor/zendesk-garden/          # tokens de cor do Zendesk Garden (Apache-2.0) + LICENSE e NOTICE
 ├─ scripts/dev.mjs                 # servidor de desenvolvimento (pnpm dev)
+├─ mcp/                            # servidor MCP da base de CNPJ da Receita (pacote separado; ver mcp/README.md)
+├─ .mcp.json                       # registra o servidor wattscout-cnpj no Claude Code
 ├─ vendor/
 │  └─ supabase-js-2.112.3.umd.js    # supabase-js vendorado — mantém CSP script-src 'self'
 ├─ js/
@@ -444,6 +479,7 @@ wattscout/
 │  ├─ migrations/0005_backlog.sql                      # tabela backlog (consumo por distribuidora sem usina)
 │  ├─ migrations/0006_auth_rls.sql                     # login (Supabase Auth) + RLS por usuário + gestão de contas
 │  ├─ migrations/0007_recasar_distribuidoras.sql       # reassociar distribuidoras das usinas + índices GIN
+│  ├─ migrations/0008_empresa_cnpj_aberto.sql          # colunas da Base CNPJ em empresa
 │  ├─ tests/rls_teste.sql            # prova o isolamento (monta usuários de mentira, termina em ROLLBACK)
 │  └─ seed.sql                       # concessionárias + carga inicial do backlog
 └─ doc/LIA-legitimo-interesse.md

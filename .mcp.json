@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "wattscout-cnpj": {
+      "command": "node",
+      "args": ["--disable-warning=ExperimentalWarning", "mcp/src/server.mjs"]
+    }
+  }
+}

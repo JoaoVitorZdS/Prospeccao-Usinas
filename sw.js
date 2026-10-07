@@ -24,6 +24,7 @@ const ARQUIVOS_SHELL = [
   './js/leads-filtro.js',
   './js/leads-acoes.js',
   './js/reassociar.js',
+  './js/cnpj-importacao.js',
   './js/util.js',
   './js/seed.js',
   './js/db.js',
