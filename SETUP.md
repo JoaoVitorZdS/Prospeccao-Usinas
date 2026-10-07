@@ -47,7 +47,8 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql` →
    `0005_backlog.sql` → `0006_auth_rls.sql` (login e RLS por usuário — **leia a
    seção "Login e contas" antes de rodar**: depois dela o app antigo, que usava a
-   chave pública sem login, para de funcionar).
+   chave pública sem login, para de funcionar) → `0007_recasar_distribuidoras.sql`
+   (índices e funções para reassociar a distribuidora das usinas — ver "Backlog").
    `0003`/`0004` existem porque `empresa`/`lead` ganharam campos (enriquecimento
    de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
    `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
@@ -201,10 +202,28 @@ com usina em Minas. Quanto maior a lacuna, mais vale prospectar geração ali.
   pra `concessionaria(codigo)`. RLS aberta pra `anon` como as outras (fase 1).
 - **Tela Backlog** (`js/views/backlog.js`, rota `#/backlog`): barras
   ranqueadas por lacuna, KPIs (distribuidoras aguardando, backlog somado,
-  maior lacuna) e, por linha, **"Ver usinas"** — que abre Descobrir já
-  filtrado naquela distribuidora (`#/descobrir?conc=<codigo>`). Gestor edita o
-  valor inline (✎) e adiciona distribuidora ("+ Distribuidora"); agente vê só
-  leitura. Zerar o valor tira a linha da lista ativa sem apagá-la.
+  maior lacuna) e, por linha, dois links de verdade (`href`, não só clique em JS):
+  **"Ver usinas"** — Prospecção filtrada na distribuidora
+  (`#/descobrir?conc=<codigo>`) — e **"Ver leads (n)"** — a lista de Leads
+  filtrada nela (`#/leads?conc=<codigo>`; gestor vê a equipe toda, agente os
+  dele). O nome da distribuidora também abre Prospecção. Gestor edita o valor
+  inline (✎) e adiciona distribuidora ("+ Distribuidora"); agente vê só leitura.
+  Zerar o valor tira a linha da lista ativa sem apagá-la.
+- **Por que "Ver usinas" podia abrir vazio**: o filtro é por *código* de
+  distribuidora, mas o código só era gravado em `usina_aneel` no momento da
+  importação, quando o nome da ANEEL casava com o cadastro. Usinas importadas
+  antes de uma distribuidora entrar no cadastro (como as permissionárias do
+  backlog) ficaram sem código e as empresas guardaram o **nome bruto** em
+  `empresa.distribuidoras`. Duas correções: o filtro agora aceita também o nome
+  e os aliases cadastrados, e o botão **"Reassociar distribuidoras"** (gestor,
+  no Mercado e na Prospecção) reprocessa a base já importada (migration 0007).
+  O que casa **exatamente** (código, nome ou alias) é ligado sozinho; o que só
+  casa de forma aproximada aparece numa lista para o gestor **conferir** antes
+  de aplicar (ligar a distribuidora errada é pior do que deixar sem ligar).
+- **Prospecção mostra o filtro e o motivo**: chip "Distribuidora: X ✕", link
+  "← Voltar ao Mercado" e, se a lista vier vazia, a razão (nenhuma empresa
+  associada — com o botão de reassociar —, ou "todas já são leads"; o filtro
+  padrão "Esconder quem já é lead" esconde o que a equipe já está trabalhando).
 - **Carga inicial**: `BACKLOG_INICIAL` em `js/seed.js` (do levantamento atual)
   + o `insert` em `supabase/seed.sql`. O app semeia sozinho na primeira visita
   à tela (`semearBacklog()`), só com códigos que já existem em `concessionaria`.
@@ -219,7 +238,7 @@ com usina em Minas. Quanto maior a lacuna, mais vale prospectar geração ali.
 
 Nada de conversão kWp→kWh nem "% de cobertura por usina": a tela é sobre
 *onde* falta e *quanto* falta em números absolutos, e a priorização em
-Descobrir continua sendo por potência somada da empresa.
+Prospecção continua sendo por potência somada da empresa.
 
 ## Backup
 
@@ -424,6 +443,7 @@ wattscout/
 │  ├─ migrations/0004_lead_razao_social.sql            # idem, pra lead
 │  ├─ migrations/0005_backlog.sql                      # tabela backlog (consumo por distribuidora sem usina)
 │  ├─ migrations/0006_auth_rls.sql                     # login (Supabase Auth) + RLS por usuário + gestão de contas
+│  ├─ migrations/0007_recasar_distribuidoras.sql       # reassociar distribuidoras das usinas + índices GIN
 │  ├─ tests/rls_teste.sql            # prova o isolamento (monta usuários de mentira, termina em ROLLBACK)
 │  └─ seed.sql                       # concessionárias + carga inicial do backlog
 └─ doc/LIA-legitimo-interesse.md

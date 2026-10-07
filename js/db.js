@@ -276,31 +276,29 @@ export async function semearConcessionarias(forcar = false) {
   return alvo.length;
 }
 
-async function aliasIndex() {
-  if (_aliasIndex) return _aliasIndex;
-  const lista = await todos('concessionaria');
+/** Índice slug(código | nome | alias) → código. Função pura (testável com a lista do seed). */
+export function montarIndiceAliases(lista) {
   const m = new Map();
   for (const c of lista) {
     m.set(slug(c.codigo), c.codigo);
     m.set(slug(c.nome), c.codigo);
     for (const a of c.aliases || []) m.set(slug(a), c.codigo);
   }
-  _aliasIndex = m;
   return m;
 }
 
-export const invalidarAliases = () => { _aliasIndex = null; };
-
 /**
- * Casa o `NomAgente` da ANEEL (ou o texto da planilha) com o código canônico.
- * Fail-open: sem match devolve null e o chamador guarda em `concessionaria_raw`.
+ * Casa um texto com o código canônico usando o índice. Exato primeiro; sem `estrito`, cai no
+ * casamento por prefixo/trecho (chave com 4+ letras, a mais longa vence). Função pura.
  */
-export async function casarConcessionaria(texto) {
+export function casarComIndice(idx, texto, { estrito = false } = {}) {
   if (!texto) return null;
-  const idx = await aliasIndex();
   const s = slug(texto);
   if (!s) return null;
   if (idx.has(s)) return idx.get(s);
+  // `estrito`: só o casamento exato (código, nome ou alias). Usado nas correções em massa, onde ligar
+  // à distribuidora errada é pior do que deixar sem ligar (ex.: "COOPERATIVA ZETA" começa com "coopera").
+  if (estrito) return null;
   // prefixo: "CEMIG DISTRIBUICAO SA" casa com "CEMIG"
   let melhor = null, tam = 0;
   for (const [k, v] of idx) {
@@ -309,6 +307,73 @@ export async function casarConcessionaria(texto) {
     }
   }
   return melhor;
+}
+
+async function aliasIndex() {
+  if (_aliasIndex) return _aliasIndex;
+  _aliasIndex = montarIndiceAliases(await todos('concessionaria'));
+  return _aliasIndex;
+}
+
+export const invalidarAliases = () => { _aliasIndex = null; };
+
+/**
+ * Casa o `NomAgente` da ANEEL (ou o texto da planilha) com o código canônico.
+ * Fail-open: sem match devolve null e o chamador guarda em `concessionaria_raw`.
+ */
+export async function casarConcessionaria(texto, opcoes) {
+  if (!texto) return null;
+  return casarComIndice(await aliasIndex(), texto, opcoes);
+}
+
+/** Liga TODAS as usinas com este nome (e ainda sem código) ao código, em lotes curtos (0007). */
+async function ligarUsinas(nome, codigo) {
+  const sb = await abrir();
+  const LOTE = 20000;
+  let total = 0;
+  let n;
+  do {
+    n = await checar(await sb.rpc('recasar_usinas', { p_nome: nome, p_codigo: codigo, p_limite: LOTE }));
+    total += n;
+  } while (n >= LOTE);
+  return total;
+}
+
+/**
+ * Liga ao cadastro de distribuidoras as usinas que ficaram sem código (importadas antes de a
+ * distribuidora existir no cadastro, ou com alias que ainda não casava).
+ *
+ * Só aplica, sozinho, o casamento EXATO (código, nome ou alias). O que só casa de forma aproximada
+ * volta em `sugestoes` para o gestor conferir (`aplicarCorrespondencias`), e o que não casa em nada
+ * volta em `semCorrespondencia`. Depois, quem chama deve rodar `agregarEmpresas()` para refletir
+ * o código em `empresa.distribuidoras`.
+ */
+export async function recasarConcessionarias({ onProgresso } = {}) {
+  invalidarAliases();
+  const sb = await abrir();
+  const pendentes = await checar(await sb.rpc('distribuidoras_sem_codigo'));
+  const resumo = { nomes: pendentes.length, casados: 0, usinas: 0, sugestoes: [], semCorrespondencia: [] };
+  for (let i = 0; i < pendentes.length; i++) {
+    const { nome, qtd } = pendentes[i];
+    const exato = await casarConcessionaria(nome, { estrito: true });
+    if (exato) {
+      resumo.usinas += await ligarUsinas(nome, exato);
+      resumo.casados++;
+    } else {
+      const aproximado = await casarConcessionaria(nome);
+      if (aproximado) resumo.sugestoes.push({ nome, qtd: Number(qtd), codigo: aproximado });
+      else resumo.semCorrespondencia.push({ nome, qtd: Number(qtd) });
+    }
+    onProgresso?.({ feito: i + 1, total: pendentes.length, nome, codigo: exato || null });
+  }
+  return resumo;
+}
+
+/** Aplica correspondências que o gestor confirmou: [{ nome, codigo }]. Devolve quantas usinas ligou. */
+export async function aplicarCorrespondencias(lista) {
+  let usinas = 0;
+  for (const { nome, codigo } of lista) usinas += await ligarUsinas(nome, codigo);
+  return usinas;
 }
 
 /* ═══════════════ Backlog comercial por distribuidora ═══════════════ */

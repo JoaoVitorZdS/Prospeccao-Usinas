@@ -23,6 +23,7 @@ const ARQUIVOS_SHELL = [
   './js/auth.js',
   './js/leads-filtro.js',
   './js/leads-acoes.js',
+  './js/reassociar.js',
   './js/util.js',
   './js/seed.js',
   './js/db.js',

@@ -303,6 +303,47 @@ begin
   reset role;
 end $$;
 
+/* ── 0007: reassociar distribuidoras (só gestor escreve; agente não altera nada) ── */
+select set_config('request.jwt.claims', '', true);
+update public.profiles set papel = 'gestor' where id = '00000000-0000-0000-0000-0000000000b1';  -- G volta a ser gestor
+insert into public.concessionaria (codigo, nome, uf) values ('ENERGISA-AC', 'Energisa Acre', 'AC') on conflict do nothing;
+insert into public.usina_aneel (cod_empreendimento, distribuidora_nome, fonte) values
+  ('U1', 'ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'teste'),
+  ('U2', 'ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'teste'),
+  ('U3', 'ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'teste'),
+  ('U4', 'COOPERATIVA DESCONHECIDA', 'teste');
+
+do $$
+declare n int; q bigint;
+begin
+  -- agente A tenta reassociar: o RLS impede, nada muda
+  perform set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000000a2","role":"authenticated"}', true);
+  set local role authenticated;
+  n := public.recasar_usinas('ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'ENERGISA-AC');
+  reset role;
+  if n <> 0 then raise exception 'FALHOU: agente reassociou % usina(s)', n; end if;
+  raise notice 'ok: agente não reassocia usinas (RLS)';
+
+  -- gestor G
+  perform set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000000a1","role":"authenticated"}', true);
+  set local role authenticated;
+  select count(*) into q from public.distribuidoras_sem_codigo();
+  if q <> 2 then raise exception 'FALHOU: deveria listar 2 nomes sem código, listou %', q; end if;
+  select d.qtd into q from public.distribuidoras_sem_codigo() d where d.nome like 'ENERGISA ACRE%';
+  if q <> 3 then raise exception 'FALHOU: Energisa Acre deveria ter 3 usinas sem código, tem %', q; end if;
+
+  n := public.recasar_usinas('ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'ENERGISA-AC', 2);   -- limite 2 → em lotes
+  if n <> 2 then raise exception 'FALHOU: 1º lote deveria ligar 2, ligou %', n; end if;
+  n := public.recasar_usinas('ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'ENERGISA-AC', 2);
+  if n <> 1 then raise exception 'FALHOU: 2º lote deveria ligar 1, ligou %', n; end if;
+  n := public.recasar_usinas('ENERGISA ACRE - DISTRIBUIDORA DE ENERGIA S.A', 'ENERGISA-AC', 2);
+  if n <> 0 then raise exception 'FALHOU: 3º lote deveria ligar 0, ligou %', n; end if;
+  select count(*) into q from public.distribuidoras_sem_codigo();
+  if q <> 1 then raise exception 'FALHOU: sobra só a cooperativa desconhecida (veio %)', q; end if;
+  reset role;
+  raise notice 'ok: gestor reassocia distribuidoras em lotes e a lista de pendentes encolhe';
+end $$;
+
 /* ── bootstrap: instalação sem nenhum gestor → a primeira conta confirmada vira gestor ── */
 select set_config('request.jwt.claims', '', true);   -- volta a ser o SQL Editor (sem usuário logado)
 update public.profiles set papel = 'agente';          -- zera os gestores
