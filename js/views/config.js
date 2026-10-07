@@ -374,7 +374,7 @@ export async function viewConfig(params, ctxApp) {
         onclick: async () => {
           const dump = await exportarBackup();
           baixar(new Blob([JSON.stringify(dump)], { type: 'application/json' }),
-            nomeArquivo('backup-lex-prospecta', perfil.nome, 'json'), 'application/json');
+            nomeArquivo('backup-wattscout', perfil.nome, 'json'), 'application/json');
           toast('Backup gerado.', 'ok');
         },
       }, 'Exportar backup (JSON)'),
@@ -422,7 +422,7 @@ export async function viewConfig(params, ctxApp) {
         'Isso é trabalho de ETL fora do navegador. Importe recortes por UF/distribuidora.')));
 
   raiz.append(
-    cabecalhoPagina('Configuração', 'Script, agentes, supressão, links e operação'),
+    cabecalhoPagina('Admin › Configuração', 'Script, agentes, supressão, links e operação'),
     cardScript,
     cardPerfis,
     cardSup,

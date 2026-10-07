@@ -163,7 +163,7 @@ export async function viewConversas(params, ctxApp) {
   }
 
   raiz.append(
-    cabecalhoPagina('Conversas',
+    cabecalhoPagina('Comunicações',
       'Caixa de entrada dos toques registrados — a ferramenta prepara e registra; quem envia é você, no seu canal'),
     areaKpis,
     areaFiltros,

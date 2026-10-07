@@ -8,14 +8,15 @@
 // que fica sem dependência nenhuma. Se a versão Next.js do plano nascer depois,
 // troca por `@serwist/turbopack` sem mudar o contrato de cache abaixo.
 
-const VERSAO = 'lex-prospecta-v5';
+const VERSAO = 'wattscout-v6';
 const CACHE_SHELL = `${VERSAO}-shell`;
 
 const ARQUIVOS_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './css/app.css',
+  './css/wattscout.css',
+  './vendor/zendesk-garden/css-variables.css',
   './vendor/supabase-js-2.112.3.umd.js',
   './js/supabase-config.js',
   './js/app.js',
@@ -57,7 +58,7 @@ self.addEventListener('activate', (ev) => {
   ev.waitUntil((async () => {
     const nomes = await caches.keys();
     await Promise.all(nomes
-      .filter((n) => n.startsWith('lex-prospecta-') && n !== CACHE_SHELL)
+      .filter((n) => (n.startsWith('wattscout-') || n.startsWith('lex-prospecta-')) && n !== CACHE_SHELL)
       .map((n) => caches.delete(n)));
     await self.clients.claim();
   })());

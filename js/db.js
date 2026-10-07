@@ -224,7 +224,24 @@ export async function percorrer(loja, _indice, _faixa, fn) {
 // versão 100% local já tinha) — mover pra uma tabela `config` no Supabase é
 // trabalho isolado e pequeno quando isso virar dor de verdade.
 
-const PREFIXO_CONFIG = 'lex-prospecta:';
+const PREFIXO_CONFIG = 'wattscout:';
+const PREFIXO_CONFIG_LEGADO = 'lex-prospecta:'; // nome antigo do app — migrado uma vez, abaixo
+
+/** Copia as preferências guardadas sob o nome antigo (script, links, aviso do iOS) para
+ *  o prefixo novo, sem apagar nada. Roda uma vez por navegador; nunca derruba o app. */
+function migrarConfigLegada() {
+  try {
+    if (localStorage.getItem(PREFIXO_CONFIG + '__migrado')) return;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith(PREFIXO_CONFIG_LEGADO)) continue;
+      const novo = PREFIXO_CONFIG + k.slice(PREFIXO_CONFIG_LEGADO.length);
+      if (localStorage.getItem(novo) == null) localStorage.setItem(novo, localStorage.getItem(k));
+    }
+    localStorage.setItem(PREFIXO_CONFIG + '__migrado', '1');
+  } catch { /* storage bloqueado: segue com os padrões */ }
+}
+migrarConfigLegada();
 
 export async function getConfig(chave, padrao = null) {
   try {
@@ -704,13 +721,14 @@ export async function registrarLote(dados) {
 // entre projetos Supabase, backup fora de banda, ou auditoria pontual.
 
 export async function exportarBackup() {
-  const dump = { app: 'lex-prospecta', versao: VERSAO_BACKUP, exportado_em: new Date().toISOString(), dados: {} };
+  const dump = { app: 'wattscout', versao: VERSAO_BACKUP, exportado_em: new Date().toISOString(), dados: {} };
   for (const loja of LOJAS) dump.dados[loja] = await todos(loja);
   return dump;
 }
 
 export async function importarBackup(dump, { substituir = false } = {}) {
-  if (dump?.app !== 'lex-prospecta') throw new Error('Arquivo não é um backup do Lex Prospecta.');
+  // aceita o marcador antigo: backups feitos antes do renome continuam restauráveis
+  if (dump?.app !== 'wattscout' && dump?.app !== 'lex-prospecta') throw new Error('Arquivo não é um backup do WattScout.');
   const resumo = {};
   for (const loja of LOJAS) {
     const registros = dump.dados?.[loja] || [];

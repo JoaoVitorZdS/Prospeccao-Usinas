@@ -28,7 +28,7 @@ export async function viewDescobrir(params, ctxApp) {
 
   if (!totalUsinas) {
     raiz.append(
-      cabecalhoPagina('Descobrir', 'Explorador sobre a base da ANEEL'),
+      cabecalhoPagina('Prospecção', 'Explorador sobre a base da ANEEL'),
       vazio(
         'Nenhuma usina carregada ainda',
         'Vá em Importar → Base da ANEEL: baixe pelo link direto e arraste o arquivo (o ZIP da GD '
@@ -399,7 +399,7 @@ export async function viewDescobrir(params, ctxApp) {
 
   const taxa = await taxaPreenchimento();
   raiz.append(...limpar(
-    cabecalhoPagina('Descobrir',
+    cabecalhoPagina('Prospecção',
       `${fmtNum(totalUsinas)} usinas · ${fmtNum(totalEmpresas)} CNPJs distintos na base`,
       h('button', {
         class: 'btn btn--fantasma',

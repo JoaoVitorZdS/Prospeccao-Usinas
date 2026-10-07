@@ -3,7 +3,8 @@
 import { h, $, fmtNum, hojeISO } from './util.js';
 import { abrir, semearConcessionarias, perfis, criarPerfil, perfilAtual,
   definirPerfilAtual, getConfig, setConfig, contar, buscarLeads } from './db.js';
-import { registrarRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer } from './ui.js';
+import { registrarRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
+  icone, avatar, menuSuspenso } from './ui.js';
 import { viewFila } from './views/fila.js';
 import { viewConversas } from './views/conversas.js';
 import { viewDescobrir } from './views/descobrir.js';
@@ -13,15 +14,19 @@ import { viewPainel } from './views/painel.js';
 import { viewExportar } from './views/exportar.js';
 import { viewConfig } from './views/config.js';
 
-const NAV = [
-  { rota: 'fila', label: 'Minha fila', icone: '◧' },
-  { rota: 'conversas', label: 'Conversas', icone: '💬' },
-  { rota: 'descobrir', label: 'Descobrir', icone: '◎' },
-  { rota: 'backlog', label: 'Backlog', icone: '▦' },
-  { rota: 'importar', label: 'Importar', icone: '⇩' },
-  { rota: 'painel', label: 'Painel', icone: '▤' },
-  { rota: 'exportar', label: 'Exportar', icone: '⇧' },
-  { rota: 'config', label: 'Config', icone: '⚙' },
+// Barra lateral (rail). Os ids de rota ainda são os antigos (fila, conversas, descobrir…);
+// só os rótulos mudaram — a renomeação das rotas acontece junto com cada tela refeita.
+const NAV_TOPO = [
+  { rota: 'fila', label: 'Leads', icone: 'leads' },
+  { rota: 'conversas', label: 'Comunicações', icone: 'conversas' },
+  { rota: 'descobrir', label: 'Prospecção', icone: 'prospeccao' },
+  { rota: 'backlog', label: 'Mercado', icone: 'mercado' },
+  { rota: 'painel', label: 'Relatórios', icone: 'relatorios' },
+  { rota: 'importar', label: 'Importar', icone: 'importar' },
+  { rota: 'exportar', label: 'Exportar', icone: 'exportar' },
+];
+const NAV_BASE = [
+  { rota: 'config', label: 'Admin', icone: 'admin' },
 ];
 
 const ctxApp = { perfil: null, ehGestor: false, recarregarApp: null };
@@ -52,7 +57,7 @@ function pedirPerfil(existentes) {
       : null;
 
     const m = modal({
-      titulo: existentes.length ? 'Quem está usando?' : 'Bem-vindo ao Lex Prospecta',
+      titulo: existentes.length ? 'Quem está usando?' : 'Bem-vindo ao WattScout',
       largura: '560px',
       corpo: h('div', {},
         !existentes.length
@@ -91,37 +96,84 @@ function pedirPerfil(existentes) {
 
 /* ═══════════════ Shell ═══════════════ */
 
-function montarShell() {
-  const nav = h('nav', { class: 'nav', 'aria-label': 'Seções' },
-    NAV.map((n) => h('a', {
-      class: 'nav__item', href: `#/${n.rota}`, dataset: { rota: n.rota },
-    }, h('span', { class: 'nav__ico' }, n.icone), n.label)));
-
-  const chip = h('button', { class: 'perfil-chip', id: 'perfil-chip' });
-  const badgeFila = h('span', { class: 'nav__contador', id: 'contador-fila', hidden: true });
-
-  const cab = h('header', { class: 'topo' },
-    h('a', { class: 'marca', href: '#/fila' },
-      h('img', { src: 'icons/icon-192.png', alt: '', width: '28', height: '28' }),
-      h('span', {}, 'Lex ', h('strong', {}, 'Prospecta'))),
-    nav,
-    h('div', { class: 'topo__dir' }, badgeFila, chip));
-
-  document.body.prepend(cab);
-  return { chip, badgeFila };
+function itemRail(n, extra) {
+  return h('a', {
+    class: 'rail__item', href: `#/${n.rota}`, dataset: { rota: n.rota, rotulo: n.label },
+    'aria-label': n.label,
+  }, icone(n.icone), extra || null);
 }
 
-async function atualizarChip(chip) {
+function montarShell() {
+  const badgeFila = h('span', { class: 'rail__contador', id: 'contador-fila', hidden: true });
+
+  const rail = h('nav', { class: 'rail', 'aria-label': 'Navegação principal' },
+    h('a', { class: 'rail__marca', href: '#/fila', 'aria-label': 'WattScout — início', title: 'WattScout' },
+      h('img', { src: 'icons/icon-192.png', alt: '', width: '32', height: '32' })),
+    h('div', { class: 'rail__itens' },
+      NAV_TOPO.map((n) => itemRail(n, n.rota === 'fila' ? badgeFila : null))),
+    h('div', { class: 'rail__base' }, NAV_BASE.map((n) => itemRail(n))));
+
+  // busca global: manda o texto para a lista de leads (que já busca nome, CNPJ, telefone, cidade…)
+  const campoBusca = h('input', {
+    type: 'search', id: 'busca-global', placeholder: 'Buscar leads, CNPJ, telefone…  ( / )',
+    'aria-label': 'Buscar em todos os seus leads', autocomplete: 'off',
+  });
+  const busca = h('form', {
+    class: 'topo__busca', role: 'search',
+    onsubmit: (e) => {
+      e.preventDefault();
+      const q = campoBusca.value.trim();
+      if (q) navegar('fila', { f: 'meus', q });
+    },
+  }, icone('busca', { tamanho: 'peq' }), campoBusca);
+
+  const botaoNovo = h('button', { class: 'btn btn--primario btn--mini', type: 'button' },
+    icone('mais', { tamanho: 'peq' }), 'Novo');
+  const menuNovo = menuSuspenso(botaoNovo, [
+    { rotulo: 'Importar planilha', icone: 'importar', onclick: () => navegar('importar') },
+    { rotulo: 'Prospectar usinas', icone: 'prospeccao', onclick: () => navegar('descobrir') },
+  ]);
+
+  const topo = h('header', { class: 'topo' },
+    busca,
+    h('div', { class: 'topo__dir' }, menuNovo));
+
+  document.body.prepend(rail, topo);
+  return { badgeFila };
+}
+
+/** Redesenha o avatar do topo e o menu do usuário (o menu precisa do perfil atual). */
+async function atualizarChip() {
   const p = ctxApp.perfil;
+  // botão novo a cada chamada: menuSuspenso() registra o clique no botão que recebe
+  const chip = h('button', { class: 'perfil-chip', id: 'perfil-chip', type: 'button' });
   chip.replaceChildren(
-    h('span', { class: 'perfil-chip__ini' }, (p.nome || '?').slice(0, 1).toUpperCase()),
+    avatar(p.nome),
     h('span', { class: 'perfil-chip__nome' }, p.nome),
     h('span', { class: 'perfil-chip__papel' }, p.papel));
-  chip.onclick = async () => {
-    const lista = (await perfis()).filter((x) => x.ativo);
-    const p2 = await pedirPerfil(lista.filter((x) => x.id !== ctxApp.perfil.id));
-    if (p2) location.reload();
-  };
+  chip.setAttribute('aria-label', `Menu de ${p.nome}`);
+
+  const antigo = document.getElementById('menu-usuario');
+  const menu = menuSuspenso(chip, [
+    {
+      cabecalho: h('div', { class: 'menu__cab-conteudo', style: 'display:flex;gap:10px;align-items:center' },
+        avatar(p.nome, { tamanho: 'grande' }),
+        h('div', {}, h('strong', {}, p.nome), p.email ? h('small', {}, p.email) : null, h('small', {}, p.papel))),
+    },
+    { rotulo: 'Configurações', icone: 'admin', onclick: () => navegar('config') },
+    { sep: true },
+    {
+      rotulo: 'Trocar de usuário', icone: 'usuario',
+      onclick: async () => {
+        const lista = (await perfis()).filter((x) => x.ativo);
+        const p2 = await pedirPerfil(lista.filter((x) => x.id !== ctxApp.perfil.id));
+        if (p2) location.reload();
+      },
+    },
+  ]);
+  menu.id = 'menu-usuario';
+  if (antigo) antigo.replaceWith(menu);
+  else document.querySelector('.topo__dir').append(menu);
 }
 
 async function atualizarContador(badgeFila) {
@@ -132,8 +184,9 @@ async function atualizarContador(badgeFila) {
       ['a_abordar', 'abordado', 'em_conversa', 'qualificado', 'proposta'].includes(l.status)
       && l.proxima_acao_em && l.proxima_acao_em <= hoje).length;
     badgeFila.hidden = devidos === 0;
-    badgeFila.textContent = `${fmtNum(devidos)} para hoje`;
-    badgeFila.className = `nav__contador${meus.some((l) => l.proxima_acao_em && l.proxima_acao_em < hoje) ? ' is-atrasado' : ''}`;
+    badgeFila.textContent = devidos > 99 ? '99+' : String(devidos);
+    badgeFila.title = `${fmtNum(devidos)} para hoje`;
+    badgeFila.className = `rail__contador${meus.some((l) => l.proxima_acao_em && l.proxima_acao_em < hoje) ? ' is-atrasado' : ''}`;
   } catch { /* contador é conveniência; nunca deve derrubar a tela */ }
 }
 
@@ -192,7 +245,7 @@ function prepararInstalacao() {
           h('ol', { class: 'passos' },
             h('li', {}, 'Toque em Compartilhar (o quadrado com a seta)'),
             h('li', {}, 'Escolha "Adicionar à Tela de Início"'),
-            h('li', {}, 'Abra o Lex Prospecta pelo ícone, não pelo Safari'))),
+            h('li', {}, 'Abra o WattScout pelo ícone, não pelo Safari'))),
         acoes: [{
           label: 'Entendi',
           classe: 'btn--primario',
@@ -220,7 +273,7 @@ async function boot() {
     document.body.replaceChildren(h('div', { class: 'erro-fatal' },
       h('h1', {}, 'Abra por um servidor local'),
       h('p', {}, 'Módulos ES e service worker não funcionam em file://.'),
-      h('pre', {}, 'cd lex-prospecta\npython3 -m http.server 8080\n\n→ http://localhost:8080')));
+      h('pre', {}, 'pnpm dev\n\n→ http://localhost:8080')));
     return;
   }
 
@@ -232,8 +285,8 @@ async function boot() {
   ctxApp.perfil = perfil;
   ctxApp.ehGestor = perfil.papel === 'gestor' || perfil.papel === 'admin';
 
-  const { chip, badgeFila } = montarShell();
-  await atualizarChip(chip);
+  const { badgeFila } = montarShell();
+  await atualizarChip();
 
   document.body.append(bannerConectividade());
   $('.topo__dir').prepend(prepararInstalacao());
@@ -243,7 +296,7 @@ async function boot() {
     if (p) {
       ctxApp.perfil = p;
       ctxApp.ehGestor = p.papel === 'gestor' || p.papel === 'admin';
-      await atualizarChip(chip);
+      await atualizarChip();
     }
     await renderRota();
     atualizarContador(badgeFila);
@@ -271,7 +324,8 @@ async function boot() {
   // atalho global: "/" foca a busca da tela
   document.addEventListener('keydown', (e) => {
     if (e.key === '/' && !e.target.matches('input,textarea,select,[contenteditable]')) {
-      const busca = $('.busca');
+      // busca da tela atual, ou — se a tela não tem — a busca global do topo
+      const busca = $('.busca') || $('#busca-global');
       if (busca) { e.preventDefault(); busca.focus(); }
     }
     if (e.key === 'Escape' && drawerEstaAberto()) fecharDrawer();

@@ -25,8 +25,9 @@ const FILTROS = [
 export async function viewFila(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
   const estado = {
-    filtro: params.f || 'hoje',
-    texto: '',
+    // vindo da busca global (?q=) a lista abre em "Todos meus": buscar só no que vence hoje esconderia o lead
+    filtro: params.f || (params.q ? 'meus' : 'hoje'),
+    texto: params.q || '',
     selecao: new Set(),
   };
 
@@ -217,6 +218,7 @@ export async function viewFila(params, ctxApp) {
     type: 'search', class: 'busca',
     placeholder: 'Buscar por nome, CNPJ, telefone, cidade…',
     'aria-label': 'Buscar leads',
+    value: estado.texto,
   });
   busca.addEventListener('input', debounce(() => {
     estado.texto = busca.value.trim();
@@ -226,7 +228,7 @@ export async function viewFila(params, ctxApp) {
   const barraFiltros = h('div', {});
 
   raiz.append(
-    cabecalhoPagina('Minha fila',
+    cabecalhoPagina('Leads',
       `${perfil.nome} · ordenada por vencimento e depois por número de tentativas`,
       busca),
     barraFiltros,

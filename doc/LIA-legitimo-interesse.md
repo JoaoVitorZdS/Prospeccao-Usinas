@@ -1,7 +1,7 @@
 # Relatório de Impacto à Proteção de Dados — Legítimo Interesse
-### Prospecção comercial B2B de usinas de geração distribuída (Lex Prospecta)
+### Prospecção comercial B2B de usinas de geração distribuída (WattScout)
 
-**Versão 1.0 · elaborado junto com o lançamento do Lex Prospecta.**
+**Versão 1.0 · elaborado junto com o lançamento do WattScout (antes chamado Lex Prospecta).**
 **Responsável pela atividade:** equipe comercial de usinas — Alexandria.
 **Base legal invocada:** art. 7º, IX, da LGPD (legítimo interesse do controlador).
 
@@ -79,6 +79,6 @@ tratamento de dado de PF).
 ---
 
 *Este é um documento de referência elaborado como parte do plano de produto do
-Lex Prospecta. Não substitui orientação jurídica formal — antes de operar em
+WattScout. Não substitui orientação jurídica formal — antes de operar em
 produção com dado pessoal real, submeta à revisão do time jurídico/DPO da
 organização.*

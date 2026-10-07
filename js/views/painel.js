@@ -39,7 +39,7 @@ export async function viewPainel(params, ctxApp) {
 
   if (!leads.length) {
     raiz.append(
-      cabecalhoPagina('Painel', ehGestor ? 'Todos os agentes' : perfil.nome),
+      cabecalhoPagina('Relatórios', ehGestor ? 'Todos os agentes' : perfil.nome),
       vazio('Sem leads ainda', 'Importe a planilha atual ou puxe leads em Descobrir.'));
     return raiz;
   }
@@ -167,7 +167,7 @@ export async function viewPainel(params, ctxApp) {
   const taxa = await taxaPreenchimento();
 
   raiz.append(...limpar(
-    cabecalhoPagina('Painel',
+    cabecalhoPagina('Relatórios',
       ehGestor ? `Todos os agentes · ${fmtNum(leads.length)} leads` : `${perfil.nome} · sua carteira`),
     kpis,
     h('div', { class: 'grade-2 grade-2--larga' },

@@ -86,7 +86,7 @@ export async function viewBacklog(params, ctxApp) {
   /* ── estado vazio ── */
   if (!linhas.length) {
     raiz.append(
-      cabecalhoPagina('Backlog', 'Consumo por distribuidora ainda sem usina casada'),
+      cabecalhoPagina('Mercado › Backlog', 'Consumo por distribuidora ainda sem usina casada'),
       vazio(
         'Sem backlog cadastrado',
         ehGestor

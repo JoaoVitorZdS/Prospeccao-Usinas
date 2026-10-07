@@ -1,4 +1,4 @@
-# SETUP.md — o que não cabe em código
+# SETUP.md — WattScout: o que não cabe em código
 
 O front-end é **estático** (sem servidor próprio, sem passo de build — abre
 com qualquer servidor HTTP simples), mas os DADOS são reais: `js/db.js` fala
@@ -20,12 +20,16 @@ existindo (ver seção seguinte) — sem ele o app mostra "Não consegui iniciar
 na cara, de propósito, em vez de falhar silenciosamente depois.
 
 ```bash
-cd lex-prospecta
-python3 -m http.server 8080
+pnpm dev            # ou: npm run dev
 # → http://localhost:8080
+# outra porta:  pnpm dev -- --port 3000   |   abrir o navegador:  pnpm dev -- --open
 ```
 
-Qualquer servidor estático serve (`npx serve`, `php -S localhost:8080`, Caddy,
+`pnpm dev` roda `scripts/dev.mjs`: um servidor estático em Node puro (sem dependências, sem
+Python), com `Cache-Control: no-store` para você sempre ver a última edição. Só escuta em
+127.0.0.1 por padrão. `pnpm test` roda os testes.
+
+Qualquer outro servidor estático também serve (`npx serve`, `php -S localhost:8080`, Caddy,
 nginx). Para instalar como PWA de verdade (ícone, standalone, offline), é
 preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 (GitHub Pages, Netlify, Vercel, Cloudflare Pages, um Nginx com Let's Encrypt).
@@ -340,14 +344,16 @@ QR code do WhatsApp pessoal do agente.
 ## Estrutura do repo
 
 ```
-lex-prospecta/
+wattscout/
 ├─ index.html                      # shell da página — inclui a CSP e o <script> do vendor
 ├─ manifest.webmanifest             # PWA
 ├─ sw.js                           # service worker "Nível 0" — hand-rolled, sem build step
 ├─ vercel.json                      # headers de segurança + cache para deploy real
 ├─ .vercelignore                    # exclusões extras só pra `vercel deploy` direto do disco
 ├─ package.json                     # só pra `npm test` — zero dependência de runtime
-├─ css/app.css
+├─ css/wattscout.css                 # sistema visual (casca, componentes) sobre os tokens do Garden
+├─ vendor/zendesk-garden/          # tokens de cor do Zendesk Garden (Apache-2.0) + LICENSE e NOTICE
+├─ scripts/dev.mjs                 # servidor de desenvolvimento (pnpm dev)
 ├─ vendor/
 │  └─ supabase-js-2.112.3.umd.js    # supabase-js vendorado — mantém CSP script-src 'self'
 ├─ js/
