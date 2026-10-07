@@ -45,10 +45,20 @@ export async function viewImportar(params, ctxApp) {
     acaoDup: 'ignorar',     // ignorar | mesclar | criar
     ownerPadrao: perfil.id,
     origemPadrao: 'planilha_legada',
+    nomeLista: '',          // nome da lista criada pela importação de leads (vazio = nome do arquivo)
     analise: null,
   };
 
   const perfis = (await todos('profiles')).filter((p) => p.ativo);
+
+  /** Nome da lista que esta importação vai criar: o que a pessoa digitou ou o nome do arquivo. */
+  function nomePadraoLista() {
+    const arq = estado.nomeArquivoOrigem || '';
+    if (!arq || /^colagem/.test(arq)) return `Colagem de ${fmtData(hojeISO())}`;
+    return arq.replace(/\.[^.]+$/, '');
+  }
+  const nomeDaLista = () => (estado.nomeLista || '').trim() || nomePadraoLista();
+
   const raiz = h('div', { class: 'pagina' });
   const areaEtapas = h('div', {});
 
@@ -691,6 +701,15 @@ export async function viewImportar(params, ctxApp) {
         kpi('Rejeitados', fmtNum(rejeitadas.length)),
         cont.suprimido ? kpi('Bloqueados por opt-out', fmtNum(cont.suprimido)) : null,
         cont.pf ? kpi('Titulares PF', fmtNum(cont.pf), 'fora do recorte') : null),
+      tipo === 'lead'
+        ? h('label', { class: 'campo' },
+          h('span', {}, 'Nome da lista'),
+          h('input', {
+            type: 'text', value: estado.nomeLista, placeholder: nomePadraoLista(), maxlength: '120',
+            oninput: (e) => { estado.nomeLista = e.target.value; },
+          }),
+          h('small', {}, 'Os leads criados entram nesta lista — depois dá para abri-la, renomeá-la ou excluí-la em Listas.'))
+        : null,
       semConc || semAutor
         ? h('p', { class: 'aviso' },
           semConc ? `${semConc} linha(s) com distribuidora não reconhecida — vão para concessionaria_raw (fail-open). ` : '',
@@ -739,6 +758,7 @@ export async function viewImportar(params, ctxApp) {
 
     const resumo = { total: itens.length, criados: 0, duplicados: 0, erros: 0, mesclados: 0, ignorados: 0 };
     const amostraErro = [];
+    let loteLista = null; // lista desta importação (só no modo "leads"); criada ANTES dos leads
 
     try {
       if (tipo === 'aneel') {
@@ -756,13 +776,18 @@ export async function viewImportar(params, ctxApp) {
         const nEmp = await agregarEmpresas();
         resumo.empresas = nEmp;
       } else {
+        // a lista nasce antes dos leads: cada um já é criado carimbado com o id dela
+        loteLista = await registrarLote({
+          tipo: estado.fonteTipo, agente_id: perfil.id, arquivo: estado.nomeArquivoOrigem,
+          nome: nomeDaLista(), total: itens.length, criados: 0, duplicados: 0, erros: 0,
+        });
         let feito = 0;
         for (const it of itens) {
           feito++;
           if (feito % 25 === 0) prog.atualizar(feito, itens.length);
           try {
             if (it.veredito === 'novo') {
-              const novo = await criarLead({ ...it.lead, import_lote_id: null });
+              const novo = await criarLead({ ...it.lead, import_lote_id: loteLista.id });
               await talvezHistorico(novo, it);
               resumo.criados++;
             } else if (it.veredito === 'duplicado' && it.dup?.alheio) {
@@ -771,7 +796,7 @@ export async function viewImportar(params, ctxApp) {
               await mesclar(it);
               resumo.mesclados++;
             } else if (it.veredito === 'duplicado' && estado.acaoDup === 'criar') {
-              const novo = await criarLead({ ...it.lead, cnpj: undefined, duplicado_de: it.dup.id });
+              const novo = await criarLead({ ...it.lead, cnpj: undefined, duplicado_de: it.dup.id, import_lote_id: loteLista.id });
               await talvezHistorico(novo, it);
               resumo.criados++;
             } else if (it.veredito === 'duplicado' || it.veredito === 'duplicado_lote') {
@@ -789,7 +814,7 @@ export async function viewImportar(params, ctxApp) {
         }
       }
 
-      const lote = await registrarLote({
+      const dadosLote = {
         tipo: estado.modo === 'aneel' ? 'aneel' : estado.fonteTipo,
         agente_id: perfil.id,
         arquivo: estado.nomeArquivoOrigem,
@@ -798,7 +823,11 @@ export async function viewImportar(params, ctxApp) {
         duplicados: resumo.duplicados + resumo.mesclados,
         erros: resumo.erros,
         amostra_erro: amostraErro,
-      });
+      };
+      // modo leads: fecha a lista criada no início com os números finais; ANEEL: registra o log agora
+      const lote = loteLista
+        ? await put('import_lote', { ...loteLista, ...dadosLote, atualizado_em: new Date().toISOString() })
+        : await registrarLote({ ...dadosLote, nome: `Base ANEEL — ${estado.nomeArquivoOrigem || 'importação'}` });
 
       fechar();
       const partes = [`${fmtNum(resumo.criados)} criado(s)`];
@@ -810,8 +839,10 @@ export async function viewImportar(params, ctxApp) {
 
       estado.linhas = [];
       estado.analise = null;
+      estado.nomeLista = '';
       desenhar();
       if (estado.modo === 'aneel') setTimeout(() => navegar('descobrir'), 600);
+      else if (loteLista && resumo.criados) setTimeout(() => navegar('leads', { lista: loteLista.id, f: 'meus' }), 600);
     } catch (e) {
       fechar();
       toast(`Falha na importação: ${e.message}`, 'erro', 8000);

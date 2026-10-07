@@ -2,7 +2,7 @@
 //
 // Antes desta versão, este módulo falava com IndexedDB local (cada navegador
 // com sua própria base). Agora fala com o projeto Supabase configurado em
-// `supabase-config.js` (gitignored — ver supabase-config.example.js) — os
+// `supabase-config.js` (commitado — ver SETUP.md) — os
 // dados são reais e compartilhados entre todos os agentes e dispositivos.
 //
 // A troca ficou concentrada nas PRIMITIVAS (get/todos/put/putMuitos/remover/
@@ -723,6 +723,107 @@ export function ordenarFila(leads) {
   });
 }
 
+/* ═══════════════ Operações em lote e "devolver à base" ═══════════════ */
+
+/**
+ * Aplica o MESMO patch a vários leads de uma vez (lotes de 200 ids na URL). O RLS decide quais
+ * linhas o usuário pode alterar; devolve quantas foram de fato atualizadas. Substitui os laços
+ * "um salvarLead por lead" das ações em lote — uma requisição por 200 em vez de uma por lead.
+ */
+export async function atualizarLeads(ids, patch) {
+  const lista = [...new Set((ids || []).filter(Boolean))];
+  if (!lista.length) return 0;
+  const sb = await abrir();
+  const corpo = { ...semUndefined(patch), updated_at: new Date().toISOString() };
+  const LOTE = 200;
+  let n = 0;
+  for (let i = 0; i < lista.length; i += LOTE) {
+    const r = await checar(await sb.from('lead').update(corpo).in('id', lista.slice(i, i + LOTE)).select('id'));
+    n += r.length;
+  }
+  return n;
+}
+
+/**
+ * "Devolver à base": o lead sai da carteira (soft delete + motivo), o CNPJ fica livre pelo
+ * índice único parcial e a empresa volta a aparecer em Prospecção. Dá para restaurar depois.
+ */
+export const devolverLeads = (ids, motivo) => atualizarLeads(ids, {
+  deleted_at: new Date().toISOString(),
+  devolvido_em: new Date().toISOString(),
+  devolvido_motivo: motivo || null,
+  proxima_acao_em: null,
+});
+
+/** Traz de volta leads devolvidos. Um CNPJ que ganhou outro lead nesse meio-tempo não volta (conflito). */
+export async function restaurarLeads(ids) {
+  const conflitos = [];
+  let ok = 0;
+  for (const id of new Set(ids)) {
+    try {
+      ok += await atualizarLeads([id], {
+        deleted_at: null, devolvido_em: null, devolvido_motivo: null, proxima_acao_em: hojeISO(),
+      });
+    } catch (e) {
+      if (e.codigo === '23505') conflitos.push(id); else throw e;
+    }
+  }
+  return { ok, conflitos };
+}
+
+/** Exclusão física (só gestor, pelo RLS). As interações do lead vão junto (ON DELETE CASCADE). */
+export async function excluirLeadsDefinitivo(ids) {
+  const lista = [...new Set((ids || []).filter(Boolean))];
+  const sb = await abrir();
+  let n = 0;
+  for (let i = 0; i < lista.length; i += 200) {
+    const r = await checar(await sb.from('lead').delete().in('id', lista.slice(i, i + 200)).select('id'));
+    n += r.length;
+  }
+  return n;
+}
+
+/* ═══════════════ Listas de importação ═══════════════ */
+// Uma lista é uma linha de `import_lote` com nome. Os leads apontam para ela por
+// `lead.import_lote_id`. Importar cria a lista ANTES dos leads e carimba cada um.
+
+export async function listasDeImportacao() {
+  return (await todos('import_lote')).filter((l) => !l.deleted_at);
+}
+
+export async function criarLista({ nome, descricao, agente_id, tipo = 'manual', arquivo = null }) {
+  const limpo = String(nome || '').trim();
+  if (!limpo) throw new Error('A lista precisa de um nome.');
+  return registrarLote({ tipo, agente_id, nome: limpo, descricao: descricao || null, arquivo, atualizado_em: new Date().toISOString() });
+}
+
+export async function salvarLista(lista) {
+  const nome = String(lista.nome || '').trim();
+  if (!nome) throw new Error('A lista precisa de um nome.');
+  return put('import_lote', { ...lista, nome, atualizado_em: new Date().toISOString() });
+}
+
+/** Exclui a lista (soft delete). Os leads ficam na carteira sem lista — ou voltam à base, se pedido. */
+export async function excluirLista(id, { devolverLeads: devolver = false } = {}) {
+  const leads = (await todos('lead', 'import_lote_id', id)).filter((l) => !l.deleted_at);
+  const ids = leads.map((l) => l.id);
+  if (ids.length) {
+    if (devolver) {
+      await atualizarLeads(ids, {
+        import_lote_id: null, deleted_at: new Date().toISOString(), devolvido_em: new Date().toISOString(),
+        devolvido_motivo: 'Lista excluída', proxima_acao_em: null,
+      });
+    } else {
+      await atualizarLeads(ids, { import_lote_id: null });
+    }
+  }
+  const lista = await get('import_lote', id);
+  if (lista) await put('import_lote', { ...lista, deleted_at: new Date().toISOString(), atualizado_em: new Date().toISOString() });
+  return ids.length;
+}
+
+export const moverParaLista = (ids, listaId) => atualizarLeads(ids, { import_lote_id: listaId || null });
+
 /* ═══════════════ Interação ═══════════════ */
 
 /**
@@ -731,7 +832,7 @@ export function ordenarFila(leads) {
  * descrito na seção 5.4 — o superior continua vendo uma linha por lead.
  */
 export async function registrarInteracao({ lead, agente_id, canal, sentido = 'saida',
-  resultado, status_apos, descricao, proxima_acao_em, status_motivo, ocorrido_em }) {
+  resultado, status_apos, descricao, proxima_acao_em, status_motivo, ocorrido_em, contaTentativa }) {
   const agora = new Date().toISOString();
   const inter = {
     id: uuid(),
@@ -750,7 +851,8 @@ export async function registrarInteracao({ lead, agente_id, canal, sentido = 'sa
   const dia = dataLocal(inter.ocorrido_em || agora);
   const atualizado = {
     ...lead,
-    tentativas: (lead.tentativas || 0) + (sentido === 'saida' ? 1 : 0),
+    // anotações administrativas (ex.: "Concluído") passam contaTentativa:false — não são abordagem
+    tentativas: (lead.tentativas || 0) + ((contaTentativa ?? sentido === 'saida') ? 1 : 0),
     ultimo_contato_em: dia,
     primeiro_contato_em: lead.primeiro_contato_em || dia,
     status: status_apos || lead.status,

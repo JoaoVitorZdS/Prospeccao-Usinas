@@ -1,4 +1,4 @@
-// views/cockpit.js — o drawer de abordagem (seção 7.C).
+// views/cockpit.js — o painel de abordagem do lead (seção 7.C).
 //
 // Regra do produto: a ferramenta PREPARA e REGISTRA. Não dispara nada.
 // Os links abaixo só abrem o canal do agente — nenhum envio automático, nem
@@ -6,9 +6,14 @@
 //
 // O encadeamento "Ctrl+Enter salva e avança para o próximo da fila" é o que faz
 // um lead levar ~20 s. Se algo aqui ficar lento, é aqui que dói.
+//
+// O mesmo cockpit aparece de duas formas: a GAVETA rápida (`abrirCockpit`, aberta a partir da
+// lista com Enter) e a PÁGINA do lead (`views/lead.js`, em três colunas). A lógica — dados,
+// script, registro do toque, ações — mora em `criarCockpit`; quem exibe só decide ONDE cada
+// seção vai (`compor`).
 
 import {
-  h, esc, maskCnpj, maskFone, waLink, fmtData, fmtDataHora, fmtPotencia,
+  h, maskCnpj, maskFone, waLink, fmtData, fmtDataHora, fmtPotencia,
   addDias, hojeISO, copiar, digits, urlSegura,
 } from '../util.js';
 import {
@@ -21,6 +26,9 @@ import {
 import {
   drawer, fecharDrawer, badge, badgeStatus, toast, botaoCopiar, confirmar, perguntar,
 } from '../ui.js';
+import {
+  concluirLeads, devolverALeadsBase, excluirDefinitivo, completarDados, editarLeadCompleto,
+} from '../leads-acoes.js';
 
 /** Links externos vêm da config — dá para corrigir uma URL sem tocar em código. */
 export const LINKS_PADRAO = [
@@ -47,23 +55,34 @@ function montarURL(tpl, ctx) {
 }
 
 /**
- * Abre o cockpit. `fila`/`indice` habilitam o "salvar e avançar".
- * `aoMudar` avisa a tela de trás para redesenhar a linha.
+ * Cria o controlador do cockpit de UM lead. Carrega os dados uma vez e devolve:
+ *   montar(compor, host)  desenha e chama `compor(secoes, ctx)` a cada redesenho;
+ *   desmontar()           solta o atalho de teclado;
+ *   atual()               o lead como está agora;
+ *   acoes                 [{ id, rotulo, classe, perigo, soGestor, executar }] para botões do chamador.
+ *
+ * Opções: `fila`/`indice`/`aoAvancar` habilitam "salvar e próximo"; `aoMudar(lead)` avisa a tela de
+ * trás; `aoSair()` é chamado quando o lead deixa de existir na carteira (devolvido/excluído);
+ * `aoFechar` liga o Esc e o "×" (só na gaveta).
  */
-export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMudar }) {
+export async function criarCockpit({ lead, fila = [], indice = 0, perfil, aoMudar, aoAvancar, aoSair, aoFechar }) {
   let atual = lead;
   // só gestor transfere lead para outro agente (RLS: o agente não pode mudar o dono)
   const ehGestorCk = perfil.papel === 'gestor' || perfil.papel === 'admin';
+  let empresa = null;
 
-  const [empresa, conc, links, tplScript, perfis] = await Promise.all([
+  const [emp, conc, links, tplScript, perfis, listas] = await Promise.all([
     atual.cnpj ? get('empresa', atual.cnpj) : null,
     todos('concessionaria'),
     getConfig('links_externos', LINKS_PADRAO),
     getConfig('script_template', SCRIPT_PADRAO),
     todos('profiles'),
+    todos('import_lote'),
   ]);
+  empresa = emp;
   const mapaConc = new Map(conc.map((c) => [c.codigo, c.nome]));
   const nomeAgente = new Map(perfis.map((p) => [p.id, p.nome]));
+  const nomeLista = (id) => listas.find((l) => l.id === id)?.nome || null;
 
   const dados = () => {
     const e = empresa || {};
@@ -113,8 +132,18 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
     descricao: '',
   };
 
-  const raiz = h('div', { class: 'cockpit' });
-  const painel = drawer({ conteudo: raiz, aoFechar: () => document.removeEventListener('keydown', onTeclaGlobal, true) });
+  let compor = null;
+  let host = null;
+  const refs = { escolherCanal: null };
+
+  /** Relê o lead e a empresa do banco depois de uma ação que mexeu neles. */
+  async function recarregar() {
+    atual = (await get('lead', atual.id)) || atual;
+    if (atual.cnpj) empresa = await get('empresa', atual.cnpj);
+    form.status = atual.status;
+    form.status_motivo = atual.status_motivo || '';
+    form.proxima_acao_em = atual.proxima_acao_em || hojeISO();
+  }
 
   function redesenhar() {
     const d = dados();
@@ -134,10 +163,19 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
           badgeStatus(atual.status),
           badge(origemLabel(atual.origem), 'azul'),
           badge(atual.tipo === 'intermediador' ? 'Intermediador' : 'Usina', 'roxo'),
+          atual.deleted_at ? badge('DEVOLVIDO À BASE', 'ambar') : null,
           atual.opt_out ? badge('OPT-OUT', 'vermelho') : null)),
       h('div', { class: 'cockpit__navfila' },
         fila.length > 1 ? h('span', { class: 'cockpit__pos' }, `${indice + 1} / ${fila.length}`) : null,
-        h('button', { class: 'btn-icone', title: 'Fechar (Esc)', 'aria-label': 'Fechar cockpit', onclick: fecharDrawer }, '×')));
+        aoFechar
+          ? h('a', {
+            class: 'btn btn--mini', href: `#/lead/${atual.id}`, title: 'Abrir a página completa do lead',
+            onclick: () => aoFechar(),
+          }, 'Abrir página')
+          : null,
+        aoFechar
+          ? h('button', { class: 'btn-icone', title: 'Fechar (Esc)', 'aria-label': 'Fechar cockpit', onclick: () => aoFechar() }, '×')
+          : null));
 
     /* ── Faixa de fatos ── */
     const fato = (rot, val, dica) => h('div', { class: 'fato', title: dica || '' },
@@ -150,7 +188,8 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
       fato('Tentativas', String(atual.tentativas || 0)),
       fato('Último contato', fmtData(atual.ultimo_contato_em)),
       fato('Próxima ação', fmtData(atual.proxima_acao_em)),
-      fato('Dono', nomeAgente.get(atual.owner_id) || '—'));
+      fato('Dono', nomeAgente.get(atual.owner_id) || '—'),
+      atual.import_lote_id ? fato('Lista', nomeLista(atual.import_lote_id)) : null);
 
     /* ── Bloco Abordar ── */
     const wa = waLink(d.telefone);
@@ -243,6 +282,7 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
       pillsCanal.querySelectorAll('.pill').forEach((p) =>
         p.classList.toggle('is-ativa', p.dataset.canal === v));
     }
+    refs.escolherCanal = escolherCanal;
 
     /** O resultado sugere status e próxima ação — é o que reduz a 2 cliques. */
     function escolherResultado(v) {
@@ -285,13 +325,12 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
       h('label', { class: 'campo' }, h('span', {}, 'Descrição'), txtDescricao),
       h('div', { class: 'linha-botoes' },
         h('button', { class: 'btn btn--primario', onclick: () => salvar(true) },
-          h('kbd', {}, 'Ctrl+↵'), 'Salvar e próximo'),
-        h('button', { class: 'btn', onclick: () => salvar(false) }, 'Salvar e ficar'),
+          aoAvancar ? [h('kbd', {}, 'Ctrl+↵'), 'Salvar e próximo'] : [h('kbd', {}, 'Ctrl+↵'), 'Salvar toque']),
+        aoAvancar ? h('button', { class: 'btn', onclick: () => salvar(false) }, 'Salvar e ficar') : null,
         h('button', {
           class: 'btn btn--fantasma',
           onclick: async () => {
-            const s = { ...form, sentido: form.sentido === 'saida' ? 'entrada' : 'saida' };
-            form.sentido = s.sentido;
+            form.sentido = form.sentido === 'saida' ? 'entrada' : 'saida';
             toast(`Sentido: ${form.sentido === 'entrada' ? 'entrada (ele respondeu)' : 'saída'}`, 'info', 1800);
           },
         }, 'Alternar entrada/saída')));
@@ -321,18 +360,19 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
       }));
     });
 
-    /* ── Rodapé de ações menos usadas ── */
+    /* ── Rodapé de ações (gaveta); a página monta a própria barra com as mesmas `acoes` ── */
     const rodape = h('div', { class: 'cockpit__rodape' },
-      h('button', { class: 'btn btn--mini', onclick: editarLead }, 'Editar dados'),
-      ehGestorCk ? h('button', { class: 'btn btn--mini', onclick: trocarDono }, 'Trocar dono') : null,
-      h('button', { class: 'btn btn--mini btn--perigo-fraco', onclick: registrarOptOut }, 'Registrar opt-out'),
-      h('span', { class: 'cockpit__id' }, `id ${atual.id.slice(0, 8)}`));
+      acoes.filter((a) => !a.soGestor || ehGestorCk).map((a) =>
+        h('button', {
+          class: `btn btn--mini${a.perigo ? ' btn--perigo-fraco' : ''}`, onclick: a.executar,
+        }, a.rotulo)),
+      h('span', { class: 'cockpit__id' }, `id ${String(atual.id).slice(0, 8)}`));
 
-    raiz.replaceChildren(topo, fatos,
-      h('div', { class: 'cockpit__corpo' }, blocoAbordar, blocoRegistrar, timeline, rodape));
+    compor({ topo, fatos, abordar: blocoAbordar, registrar: blocoRegistrar, timeline, rodape },
+      { d, empresa, atual, nomeAgente, mapaConc, nomeLista, acoes, ehGestor: ehGestorCk });
   }
 
-  /* ═══════════ Ações ═══════════ */
+  /* ═══════════ Registrar toque ═══════════ */
 
   async function salvar(avancar) {
     if ((form.status === 'perdido' || form.status === 'descartado') && !form.status_motivo) {
@@ -358,40 +398,54 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
     aoMudar?.(salvo);
     toast('Toque registrado.', 'ok', 1600);
 
-    if (avancar) {
+    if (avancar && aoAvancar) {
       const prox = fila[indice + 1];
-      if (prox) {
-        fecharDrawer();
-        // recarrega o lead do banco: pode ter mudado na tela de trás
-        const fresco = (await get('lead', prox.id)) || prox;
-        return abrirCockpit({ lead: fresco, fila, indice: indice + 1, perfil, aoMudar });
-      }
-      fecharDrawer();
-      toast('Fim da fila. 👏', 'ok');
-      return;
+      // recarrega o lead do banco: pode ter mudado na tela de trás
+      const fresco = prox ? ((await get('lead', prox.id)) || prox) : null;
+      return aoAvancar(fresco, indice + 1);
     }
     form.resultado = null;
     form.descricao = '';
     redesenhar();
   }
 
-  async function editarLead() {
-    const d = dados();
-    const r = await perguntar('Editar dados do lead', [
-      { campo: 'razao_social', label: 'Razão social', valor: atual.razao_social || d.razao },
-      { campo: 'contato_nome', label: 'Nome do contato', valor: atual.contato_nome || '' },
-      { campo: 'contato_cargo', label: 'Cargo', valor: atual.contato_cargo || '' },
-      { campo: 'telefone', label: 'Telefone', valor: atual.telefone || '' },
-      { campo: 'email', label: 'E-mail', valor: atual.email || '' },
-      { campo: 'cidade', label: 'Cidade', valor: atual.cidade || '' },
-      { campo: 'uf', label: 'UF', valor: atual.uf || '' },
-      { campo: 'linkedin_url', label: 'LinkedIn', valor: atual.linkedin_url || '' },
-    ]);
-    if (!r) return;
-    atual = await salvarLead({ ...atual, ...r, uf: (r.uf || '').toUpperCase().slice(0, 2) || null });
+  /* ═══════════ Ações do lead ═══════════ */
+
+  async function depoisDeMudar() {
+    await recarregar();
     aoMudar?.(atual);
     redesenhar();
-    toast('Dados atualizados.', 'ok');
+  }
+
+  async function editar() {
+    const novo = await editarLeadCompleto(atual);
+    if (novo) await depoisDeMudar();
+  }
+
+  async function completar() {
+    try {
+      const r = await completarDados(atual);
+      if (r) await depoisDeMudar();
+    } catch (e) { toast(`Não consegui completar os dados: ${e.message}`, 'erro', 7000); }
+  }
+
+  async function concluir() {
+    const n = await concluirLeads([atual], { perfil });
+    if (n) await depoisDeMudar();
+  }
+
+  async function devolver() {
+    const n = await devolverALeadsBase([atual]);
+    if (!n) return;
+    aoMudar?.(null);
+    if (aoSair) aoSair('devolvido'); else await depoisDeMudar();
+  }
+
+  async function excluir() {
+    const n = await excluirDefinitivo([atual]);
+    if (!n) return;
+    aoMudar?.(null);
+    aoSair?.('excluido');
   }
 
   async function trocarDono() {
@@ -428,13 +482,25 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
     toast('Opt-out registrado e supressão gravada.', 'ok');
   }
 
+  const acoes = [
+    { id: 'editar', rotulo: 'Editar', executar: editar },
+    { id: 'completar', rotulo: 'Completar dados', executar: completar },
+    { id: 'concluir', rotulo: 'Concluir', executar: concluir },
+    { id: 'devolver', rotulo: 'Devolver à base', executar: devolver },
+    { id: 'dono', rotulo: 'Trocar dono', soGestor: true, executar: trocarDono },
+    { id: 'optout', rotulo: 'Registrar opt-out', perigo: true, executar: registrarOptOut },
+    { id: 'excluir', rotulo: 'Excluir', perigo: true, soGestor: true, executar: excluir },
+  ];
+
   /* ═══════════ Teclado ═══════════ */
 
   function onTeclaGlobal(e) {
-    if (!painel.isConnected) return;
+    if (!host?.isConnected) { document.removeEventListener('keydown', onTeclaGlobal, true); return; }
+    // dentro de um diálogo (modal) por cima do cockpit, os atalhos não valem
+    if (document.querySelector('.modal-fundo')) return;
     const emCampo = e.target.matches('input,textarea,select');
 
-    if (e.key === 'Escape') { e.preventDefault(); fecharDrawer(); return; }
+    if (e.key === 'Escape' && aoFechar) { e.preventDefault(); aoFechar(); return; }
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); salvar(true); return; }
     if (emCampo) return;
 
@@ -446,14 +512,48 @@ export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMuda
     const n = Number(e.key);
     if (n >= 1 && n <= CANAIS.length) {
       e.preventDefault();
-      const alvo = CANAIS[n - 1].v;
-      form.canal = alvo;
-      painel.querySelectorAll('[data-canal]').forEach((p) =>
-        p.classList.toggle('is-ativa', p.dataset.canal === alvo));
+      refs.escolherCanal?.(CANAIS[n - 1].v);
     }
   }
-  document.addEventListener('keydown', onTeclaGlobal, true);
 
-  redesenhar();
+  return {
+    atual: () => atual,
+    acoes,
+    ehGestor: ehGestorCk,
+    montar(fnCompor, elementoHost) {
+      compor = fnCompor;
+      host = elementoHost;
+      document.addEventListener('keydown', onTeclaGlobal, true);
+      redesenhar();
+    },
+    desmontar() { document.removeEventListener('keydown', onTeclaGlobal, true); },
+  };
+}
+
+/**
+ * Abre a GAVETA de abordagem. `fila`/`indice` habilitam o "salvar e avançar".
+ * `aoMudar` avisa a tela de trás para redesenhar a linha.
+ */
+export async function abrirCockpit({ lead, fila = [], indice = 0, perfil, aoMudar }) {
+  const raiz = h('div', { class: 'cockpit' });
+  let cockpit = null;
+  const painel = drawer({
+    conteudo: raiz,
+    aoFechar: () => cockpit?.desmontar(),
+  });
+  cockpit = await criarCockpit({
+    lead, fila, indice, perfil, aoMudar,
+    aoFechar: fecharDrawer,
+    aoSair: () => fecharDrawer(),
+    aoAvancar: async (proximo, i) => {
+      fecharDrawer();
+      if (proximo) return abrirCockpit({ lead: proximo, fila, indice: i, perfil, aoMudar });
+      toast('Fim da fila. 👏', 'ok');
+      return null;
+    },
+  });
+  cockpit.montar((s) => raiz.replaceChildren(
+    s.topo, s.fatos,
+    h('div', { class: 'cockpit__corpo' }, s.abordar, s.registrar, s.timeline, s.rodape)), painel);
   return painel;
 }

@@ -8,10 +8,12 @@
 import { h, $, fmtNum, hojeISO } from './util.js';
 import { abrir, semearConcessionarias, perfilAtual, getConfig, setConfig, contar, buscarLeads } from './db.js';
 import { sessaoAtual, sair, aoSair, erroNaUrl, emRecuperacao, limparUrlAuth } from './auth.js';
-import { registrarRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
+import { registrarRota, aliasRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
   icone, avatar, menuSuspenso, vazio } from './ui.js';
 import { telaLogin, telaPendente, telaNovaSenha } from './views/login.js';
-import { viewFila } from './views/fila.js';
+import { viewLeads } from './views/leads.js';
+import { viewLead } from './views/lead.js';
+import { viewListas } from './views/listas.js';
 import { viewConversas } from './views/conversas.js';
 import { viewDescobrir } from './views/descobrir.js';
 import { viewBacklog } from './views/backlog.js';
@@ -22,10 +24,12 @@ import { viewConfig } from './views/config.js';
 import { viewPerfil } from './views/perfil.js';
 import { viewContas } from './views/contas.js';
 
-// Barra lateral (rail). Os ids de rota ainda são os antigos (fila, conversas, descobrir…);
-// só os rótulos mudaram — a renomeação das rotas acontece junto com cada tela refeita.
+// Barra lateral (rail). Os ids de rota que ainda são os antigos (conversas, descobrir, backlog…)
+// só tiveram o rótulo trocado; a renomeação de cada rota acontece junto com a tela refeita
+// (#/fila já virou #/leads e continua funcionando por alias).
 const NAV_TOPO = [
-  { rota: 'fila', label: 'Leads', icone: 'leads' },
+  { rota: 'leads', label: 'Leads', icone: 'leads' },
+  { rota: 'listas', label: 'Listas', icone: 'listas' },
   { rota: 'conversas', label: 'Comunicações', icone: 'conversas' },
   { rota: 'descobrir', label: 'Prospecção', icone: 'prospeccao' },
   { rota: 'backlog', label: 'Mercado', icone: 'mercado' },
@@ -55,10 +59,10 @@ function montarShell() {
   const badgeFila = h('span', { class: 'rail__contador', id: 'contador-fila', hidden: true });
 
   const rail = h('nav', { class: 'rail', 'aria-label': 'Navegação principal' },
-    h('a', { class: 'rail__marca', href: '#/fila', 'aria-label': 'WattScout — início', title: 'WattScout' },
+    h('a', { class: 'rail__marca', href: '#/leads', 'aria-label': 'WattScout — início', title: 'WattScout' },
       h('img', { src: 'icons/icon-192.png', alt: '', width: '32', height: '32' })),
     h('div', { class: 'rail__itens' },
-      NAV_TOPO.map((n) => itemRail(n, n.rota === 'fila' ? badgeFila : null))),
+      NAV_TOPO.map((n) => itemRail(n, n.rota === 'leads' ? badgeFila : null))),
     h('div', { class: 'rail__base' },
       NAV_BASE.filter((n) => !n.soGestor || ctxApp.ehGestor).map((n) => itemRail(n))));
 
@@ -72,7 +76,7 @@ function montarShell() {
     onsubmit: (e) => {
       e.preventDefault();
       const q = campoBusca.value.trim();
-      if (q) navegar('fila', { f: 'meus', q });
+      if (q) navegar('leads', { f: 'meus', q });
     },
   }, icone('busca', { tamanho: 'peq' }), campoBusca);
 
@@ -294,7 +298,10 @@ async function boot() {
     ? fn(params, ctx)
     : vazio('Acesso restrito', 'Esta área é só para gestores.')));
 
-  registrarRota('fila', comCtx(viewFila));
+  registrarRota('leads', comCtx(viewLeads));
+  registrarRota('lead', comCtx(viewLead));
+  registrarRota('listas', comCtx(viewListas));
+  aliasRota('fila', 'leads');
   registrarRota('conversas', comCtx(viewConversas));
   registrarRota('descobrir', comCtx(viewDescobrir));
   registrarRota('backlog', comCtx(viewBacklog));

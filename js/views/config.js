@@ -226,32 +226,16 @@ export async function viewConfig(params, ctxApp) {
         },
       }, 'Recarregar lista padrão')));
 
-  /* ═══════════ Lotes de importação ═══════════ */
+  /* ═══════════ Listas de importação ═══════════ */
+  // O log de importações agora é a tela Listas: cada importação vira uma lista com nome, ligada aos
+  // leads que criou — dá para abrir, renomear e excluir (views/listas.js).
 
-  const cardLotes = card('Log de importações',
-    lotes.length
-      ? tabela({
-        colunas: [
-          { titulo: 'Quando', largura: '150px', render: (l) => fmtDataHora(l.created_at) },
-          { titulo: 'Tipo', largura: '110px', render: (l) => badge(l.tipo, 'azul') },
-          { titulo: 'Arquivo/origem', render: (l) => l.arquivo || '—' },
-          { titulo: 'Total', largura: '80px', alinha: 'dir', render: (l) => fmtNum(l.total) },
-          { titulo: 'Criados', largura: '80px', alinha: 'dir', render: (l) => fmtNum(l.criados) },
-          { titulo: 'Duplicados', largura: '95px', alinha: 'dir', render: (l) => fmtNum(l.duplicados) },
-          { titulo: 'Erros', largura: '75px', alinha: 'dir', render: (l) => fmtNum(l.erros) },
-          {
-            titulo: 'Amostra de erro',
-            render: (l) => ((l.amostra_erro || []).length
-              ? h('details', {}, h('summary', {}, `${l.amostra_erro.length} exemplo(s)`),
-                h('ul', { class: 'lista-erro' }, l.amostra_erro.map((e) =>
-                  h('li', {}, `linha ${e.linha}: ${e.motivo}`))))
-              : '—'),
-          },
-        ],
-        linhas: lotes.slice().sort((a, b) => (a.created_at < b.created_at ? 1 : -1)),
-        aoAbrir: () => {},
-      })
-      : h('p', { class: 'texto-fraco' }, 'Nenhuma importação registrada ainda.'));
+  const cardLotes = card('Listas de importação',
+    h('p', { class: 'texto-fraco' },
+      'Toda importação cria uma lista com os leads que trouxe. Abra, renomeie ou exclua em Listas '
+      + `(${fmtNum(lotes.length)} registrada(s) até agora).`),
+    h('div', { class: 'linha-botoes' },
+      h('button', { class: 'btn btn--primario', onclick: () => navegar('listas') }, 'Abrir Listas')));
 
   /* ═══════════ Backup ═══════════ */
 

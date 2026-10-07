@@ -42,7 +42,7 @@
     {
       "name": "Leads",
       "short_name": "Leads",
-      "url": "./index.html#/fila",
+      "url": "./index.html#/leads",
       "icons": [
         {
           "src": "icons/icon-192.png",

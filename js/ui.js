@@ -472,11 +472,11 @@ export function breadcrumb(itens) {
  * filtro; `resumo` o valor atual em texto (vazio = filtro inativo); `corpo` o conteúdo
  * do popover (um <select>, intervalo de datas…); `aoLimpar` zera o filtro.
  */
-export function chipFiltro({ rotulo, resumo = '', corpo, aoLimpar }) {
+export function chipFiltro({ rotulo, resumo = '', corpo, aoLimpar, aberto = false }) {
   const ativo = !!resumo;
-  const popover = h('div', { class: 'chip-filtro__popover', hidden: true }, corpo);
+  const popover = h('div', { class: 'chip-filtro__popover', hidden: !aberto }, corpo);
   const botao = h('button', {
-    type: 'button', class: 'chip-filtro__botao', 'aria-expanded': 'false',
+    type: 'button', class: 'chip-filtro__botao', 'aria-expanded': String(aberto),
     onclick: () => {
       const abrir = popover.hidden;
       popover.hidden = !abrir;
@@ -497,7 +497,7 @@ export function chipFiltro({ rotulo, resumo = '', corpo, aoLimpar }) {
 // Um único listener global fecha os popovers de chip quando o clique cai fora deles
 // (em vez de um listener novo a cada render da tela). Chips que saíram do DOM são descartados.
 const chipsAbertos = new Set();
-document.addEventListener('mousedown', (e) => {
+if (typeof document !== 'undefined') document.addEventListener('mousedown', (e) => {
   for (const c of chipsAbertos) {
     if (!c.raiz.isConnected) { chipsAbertos.delete(c); continue; }
     if (!c.popover.hidden && !c.raiz.contains(e.target)) {
@@ -513,6 +513,10 @@ const rotas = new Map();
 let rotaAtual = null;
 
 export const registrarRota = (nome, render) => rotas.set(nome, render);
+
+// Rotas que mudaram de nome continuam funcionando (links salvos, atalhos do manifest): #/fila → #/leads.
+const aliases = new Map();
+export const aliasRota = (de, para) => aliases.set(de, para);
 
 const montarHash = (nome, params) => {
   const limpo = Object.entries(params || {}).filter(([, v]) => v !== '' && v != null && v !== false);
@@ -533,9 +537,12 @@ export function sincronizarHash(nome, params) {
 }
 
 export async function renderRota() {
-  const bruto = location.hash.replace(/^#\/?/, '') || 'fila';
-  const [nome, qs] = bruto.split('?');
-  const render = rotas.get(nome) || rotas.get('fila');
+  const bruto = location.hash.replace(/^#\/?/, '') || 'leads';
+  const [caminho, qs] = bruto.split('?');
+  // "lead/abc-123" → rota "lead", com o resto do caminho em params._resto
+  const [primeiro, ...restoCaminho] = caminho.split('/');
+  const nome = aliases.get(primeiro) || primeiro;
+  const render = rotas.get(nome) || rotas.get('leads');
   const alvo = $('#conteudo');
   rotaAtual = nome;
   document.querySelectorAll('.rail__item').forEach((a) =>
@@ -543,7 +550,7 @@ export async function renderRota() {
   alvo.setAttribute('aria-busy', 'true');
   alvo.replaceChildren(h('div', { class: 'carregando' }, 'Carregando…'));
   try {
-    const el = await render(Object.fromEntries(new URLSearchParams(qs || '')));
+    const el = await render({ ...Object.fromEntries(new URLSearchParams(qs || '')), _resto: restoCaminho.join('/') });
     if (rotaAtual !== nome) return; // navegou de novo enquanto carregava
     alvo.replaceChildren(el);
   } catch (e) {
