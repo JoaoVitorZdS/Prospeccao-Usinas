@@ -2,7 +2,7 @@
 //
 // Antes desta versão, este módulo falava com IndexedDB local (cada navegador
 // com sua própria base). Agora fala com o projeto Supabase configurado em
-// `supabase-config.js` (gitignored — ver supabase-config.example.js) — os
+// `supabase-config.js` (commitado — ver SETUP.md) — os
 // dados são reais e compartilhados entre todos os agentes e dispositivos.
 //
 // A troca ficou concentrada nas PRIMITIVAS (get/todos/put/putMuitos/remover/
@@ -13,12 +13,12 @@
 // Esse desacoplamento é o que tornou a troca de backend uma operação
 // localizada, não uma reescrita do app inteiro.
 //
-// ⚠️ Fase 1, sem Entra ID: RLS está ligada no banco mas com políticas abertas
-// pra `anon` (ver supabase/migrations/0002_fase1_dados_compartilhados.sql) —
-// a publishable key usada aqui já é pública por design (vai no bundle do
-// navegador), então "aberta pra anon" não é uma chave vazando, é a mesma
-// ausência de isolamento por usuário que a versão local já tinha, documentada
-// em SETUP.md. Login real (Entra ID) é o próximo passo, não uma correção.
+// Segurança: o app roda logado (Supabase Auth, e-mail e senha — ver js/auth.js) e o
+// isolamento é feito pelo RLS do banco (supabase/migrations/0006_auth_rls.sql): agente
+// só enxerga os próprios leads e conversas; gestor enxerga tudo. A publishable key
+// continua pública por design — sozinha ela não lê nada, porque `anon` não tem acesso
+// a nenhuma tabela. Por isso as telas NÃO precisam mais filtrar por dono para ser
+// seguras: o filtro por dono que ainda existe aqui é só organização/UX.
 //
 // `createClient` vem de vendor/supabase-js-*.umd.js, carregado como <script>
 // clássico em index.html ANTES deste módulo — por isso `window.supabase`
@@ -53,7 +53,9 @@ export function abrir() {
     );
   }
   _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: { persistSession: false }, // fase 1: sem login real, nada pra persistir
+    // PKCE: o retorno dos links do e-mail vem em `?code=` (e não em `#access_token=`),
+    // que não colide com o roteador por hash (#/rota).
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
   });
   return Promise.resolve(_sb);
 }
@@ -224,7 +226,24 @@ export async function percorrer(loja, _indice, _faixa, fn) {
 // versão 100% local já tinha) — mover pra uma tabela `config` no Supabase é
 // trabalho isolado e pequeno quando isso virar dor de verdade.
 
-const PREFIXO_CONFIG = 'lex-prospecta:';
+const PREFIXO_CONFIG = 'wattscout:';
+const PREFIXO_CONFIG_LEGADO = 'lex-prospecta:'; // nome antigo do app — migrado uma vez, abaixo
+
+/** Copia as preferências guardadas sob o nome antigo (script, links, aviso do iOS) para
+ *  o prefixo novo, sem apagar nada. Roda uma vez por navegador; nunca derruba o app. */
+function migrarConfigLegada() {
+  try {
+    if (localStorage.getItem(PREFIXO_CONFIG + '__migrado')) return;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith(PREFIXO_CONFIG_LEGADO)) continue;
+      const novo = PREFIXO_CONFIG + k.slice(PREFIXO_CONFIG_LEGADO.length);
+      if (localStorage.getItem(novo) == null) localStorage.setItem(novo, localStorage.getItem(k));
+    }
+    localStorage.setItem(PREFIXO_CONFIG + '__migrado', '1');
+  } catch { /* storage bloqueado: segue com os padrões */ }
+}
+migrarConfigLegada();
 
 export async function getConfig(chave, padrao = null) {
   try {
@@ -257,31 +276,29 @@ export async function semearConcessionarias(forcar = false) {
   return alvo.length;
 }
 
-async function aliasIndex() {
-  if (_aliasIndex) return _aliasIndex;
-  const lista = await todos('concessionaria');
+/** Índice slug(código | nome | alias) → código. Função pura (testável com a lista do seed). */
+export function montarIndiceAliases(lista) {
   const m = new Map();
   for (const c of lista) {
     m.set(slug(c.codigo), c.codigo);
     m.set(slug(c.nome), c.codigo);
     for (const a of c.aliases || []) m.set(slug(a), c.codigo);
   }
-  _aliasIndex = m;
   return m;
 }
 
-export const invalidarAliases = () => { _aliasIndex = null; };
-
 /**
- * Casa o `NomAgente` da ANEEL (ou o texto da planilha) com o código canônico.
- * Fail-open: sem match devolve null e o chamador guarda em `concessionaria_raw`.
+ * Casa um texto com o código canônico usando o índice. Exato primeiro; sem `estrito`, cai no
+ * casamento por prefixo/trecho (chave com 4+ letras, a mais longa vence). Função pura.
  */
-export async function casarConcessionaria(texto) {
+export function casarComIndice(idx, texto, { estrito = false } = {}) {
   if (!texto) return null;
-  const idx = await aliasIndex();
   const s = slug(texto);
   if (!s) return null;
   if (idx.has(s)) return idx.get(s);
+  // `estrito`: só o casamento exato (código, nome ou alias). Usado nas correções em massa, onde ligar
+  // à distribuidora errada é pior do que deixar sem ligar (ex.: "COOPERATIVA ZETA" começa com "coopera").
+  if (estrito) return null;
   // prefixo: "CEMIG DISTRIBUICAO SA" casa com "CEMIG"
   let melhor = null, tam = 0;
   for (const [k, v] of idx) {
@@ -290,6 +307,73 @@ export async function casarConcessionaria(texto) {
     }
   }
   return melhor;
+}
+
+async function aliasIndex() {
+  if (_aliasIndex) return _aliasIndex;
+  _aliasIndex = montarIndiceAliases(await todos('concessionaria'));
+  return _aliasIndex;
+}
+
+export const invalidarAliases = () => { _aliasIndex = null; };
+
+/**
+ * Casa o `NomAgente` da ANEEL (ou o texto da planilha) com o código canônico.
+ * Fail-open: sem match devolve null e o chamador guarda em `concessionaria_raw`.
+ */
+export async function casarConcessionaria(texto, opcoes) {
+  if (!texto) return null;
+  return casarComIndice(await aliasIndex(), texto, opcoes);
+}
+
+/** Liga TODAS as usinas com este nome (e ainda sem código) ao código, em lotes curtos (0007). */
+async function ligarUsinas(nome, codigo) {
+  const sb = await abrir();
+  const LOTE = 20000;
+  let total = 0;
+  let n;
+  do {
+    n = await checar(await sb.rpc('recasar_usinas', { p_nome: nome, p_codigo: codigo, p_limite: LOTE }));
+    total += n;
+  } while (n >= LOTE);
+  return total;
+}
+
+/**
+ * Liga ao cadastro de distribuidoras as usinas que ficaram sem código (importadas antes de a
+ * distribuidora existir no cadastro, ou com alias que ainda não casava).
+ *
+ * Só aplica, sozinho, o casamento EXATO (código, nome ou alias). O que só casa de forma aproximada
+ * volta em `sugestoes` para o gestor conferir (`aplicarCorrespondencias`), e o que não casa em nada
+ * volta em `semCorrespondencia`. Depois, quem chama deve rodar `agregarEmpresas()` para refletir
+ * o código em `empresa.distribuidoras`.
+ */
+export async function recasarConcessionarias({ onProgresso } = {}) {
+  invalidarAliases();
+  const sb = await abrir();
+  const pendentes = await checar(await sb.rpc('distribuidoras_sem_codigo'));
+  const resumo = { nomes: pendentes.length, casados: 0, usinas: 0, sugestoes: [], semCorrespondencia: [] };
+  for (let i = 0; i < pendentes.length; i++) {
+    const { nome, qtd } = pendentes[i];
+    const exato = await casarConcessionaria(nome, { estrito: true });
+    if (exato) {
+      resumo.usinas += await ligarUsinas(nome, exato);
+      resumo.casados++;
+    } else {
+      const aproximado = await casarConcessionaria(nome);
+      if (aproximado) resumo.sugestoes.push({ nome, qtd: Number(qtd), codigo: aproximado });
+      else resumo.semCorrespondencia.push({ nome, qtd: Number(qtd) });
+    }
+    onProgresso?.({ feito: i + 1, total: pendentes.length, nome, codigo: exato || null });
+  }
+  return resumo;
+}
+
+/** Aplica correspondências que o gestor confirmou: [{ nome, codigo }]. Devolve quantas usinas ligou. */
+export async function aplicarCorrespondencias(lista) {
+  let usinas = 0;
+  for (const { nome, codigo } of lista) usinas += await ligarUsinas(nome, codigo);
+  return usinas;
 }
 
 /* ═══════════════ Backlog comercial por distribuidora ═══════════════ */
@@ -331,29 +415,51 @@ export async function salvarBacklog(codigo, valor, { perfilId, nota } = {}) {
 
 /* ═══════════════ Perfis ═══════════════ */
 
-export async function criarPerfil({ nome, email, papel = 'agente' }) {
-  const p = {
-    id: uuid(),
-    nome: String(nome || '').trim(),
-    email: normEmail(email) || String(email || '').trim().toLowerCase(),
-    papel,
-    ativo: true,
-    created_at: new Date().toISOString(),
-  };
-  await put('profiles', p);
-  return p;
-}
-
+// RLS: agente recebe só a própria linha; gestor recebe todas.
 export const perfis = () => todos('profiles');
 
+/** Perfil do usuário logado. Liga a conta ao perfil pelo e-mail confirmado ou cria um
+ *  perfil pendente (RPC `reivindicar_perfil`, ver 0006). Pode devolver `ativo: false`. */
 export async function perfilAtual() {
-  const id = await getConfig('perfil_atual');
-  if (!id) return null;
-  const p = await get('profiles', id);
-  return p?.ativo ? p : null;
+  const sb = await abrir();
+  return checar(await sb.rpc('reivindicar_perfil'));
 }
 
-export const definirPerfilAtual = (id) => setConfig('perfil_atual', id);
+/** Gestão de contas — só gestor (o banco recusa os demais). */
+export async function alterarPapel(perfilId, papel) {
+  const sb = await abrir();
+  return checar(await sb.rpc('alterar_papel', { p_perfil: perfilId, p_papel: papel }));
+}
+
+export async function definirAtivo(perfilId, ativo) {
+  const sb = await abrir();
+  return checar(await sb.rpc('definir_ativo', { p_perfil: perfilId, p_ativo: !!ativo }));
+}
+
+/** Gestor reserva um e-mail com papel definido: a pessoa assume o perfil ao criar a conta. */
+export async function precadastrarPerfil({ nome, email, papel = 'agente' }) {
+  const sb = await abrir();
+  const reg = {
+    nome: String(nome || '').trim(),
+    email: String(email || '').trim().toLowerCase(),
+    papel,
+    ativo: true,
+  };
+  if (!reg.nome || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reg.email)) throw new Error('Informe nome e um e-mail válido.');
+  return checar(await sb.from('profiles').insert(reg).select().maybeSingle());
+}
+
+/** O próprio usuário só pode mudar o nome (papel/situação/e-mail são barrados pelo banco). */
+export async function atualizarMeuNome(perfilId, nome) {
+  const sb = await abrir();
+  const limpo = String(nome || '').trim();
+  if (!limpo) throw new Error('O nome não pode ficar vazio.');
+  return checar(await sb.from('profiles').update({ nome: limpo }).eq('id', perfilId).select().maybeSingle());
+}
+
+export async function auditoriaPerfis(limite = 40) {
+  return buscarTop('perfil_auditoria', { ordenarPor: 'created_at', limite });
+}
 
 /* ═══════════════ Supressão (opt-out persistente) ═══════════════ */
 
@@ -395,17 +501,9 @@ export async function suprimir({ cnpj, telefone, email, motivo, registrado_por }
   // índice único: se já existe, não duplica
   const jaTem = await carregarSupressao();
   if (jaTem.testar({ cnpj: reg.cnpj, telefone: reg.telefone, email: reg.email })) return null;
+  // O gatilho `supressao_aplicar` (0006) marca como opt-out os leads correspondentes de TODOS os
+  // agentes — aqui o usuário só enxerga os próprios, então isso não pode ser feito no cliente.
   await put('supressao', reg);
-
-  // marca os leads correspondentes como opt-out
-  const alvos = await buscarLeads({ incluirRemovidos: false });
-  const bater = alvos.filter((l) =>
-    (reg.cnpj && l.cnpj === reg.cnpj)
-    || (reg.telefone && l.tel_key === reg.telefone)
-    || (reg.email && l.email_key === reg.email));
-  for (const l of bater) {
-    await salvarLead({ ...l, opt_out: true, status: 'descartado', status_motivo: 'Opt-out (LGPD)' });
-  }
   return reg;
 }
 
@@ -525,17 +623,58 @@ export async function acharDuplicado({ cnpj, telefone, email }, cache) {
     const achados = await checar(await sb.from('lead').select('*').eq('email_key', em).is('deleted_at', null).limit(1));
     if (achados.length) return { lead: achados[0], por: 'email' };
   }
+  // Nada na carteira do usuário (o RLS só deixa ver a própria): pergunta ao banco se algum
+  // colega já tem esse CNPJ/telefone/e-mail — sem revelar quem nem o conteúdo do lead.
+  const alheios = await consultarAlheios({ cnpjs: c ? [c] : [], fones: fk ? [fk] : [], emails: em ? [em] : [] });
+  if (c && alheios.cnpj.has(c)) return { lead: leadAlheio({ cnpj: c }), por: 'cnpj', alheio: true };
+  if (fk && alheios.telefone.has(fk)) return { lead: leadAlheio({ tel_key: fk }), por: 'telefone', alheio: true };
+  if (em && alheios.email.has(em)) return { lead: leadAlheio({ email_key: em }), por: 'email', alheio: true };
   return null;
 }
 
-/** Índice em memória para deduplicar um lote inteiro sem N consultas. */
-export async function cacheDedup() {
+/** Marcador de "existe um lead assim na carteira de OUTRO agente" — sem id, dono nem dados. */
+const leadAlheio = (chaves) => ({ id: null, alheio: true, owner_id: null, status: null, ...chaves });
+
+/**
+ * Pergunta ao banco quais chaves já existem em leads ATIVOS de qualquer agente (RPC
+ * `checar_duplicados`, 0006). Devolve Maps chave → "é meu?". Lotes de 500 por chamada.
+ */
+export async function consultarAlheios({ cnpjs = [], fones = [], emails = [] } = {}) {
+  const out = { cnpj: new Map(), telefone: new Map(), email: new Map() };
+  const un = (a) => [...new Set(a.filter(Boolean))];
+  const [C, F, E] = [un(cnpjs), un(fones), un(emails)];
+  const total = Math.max(C.length, F.length, E.length);
+  if (!total) return out;
+  const sb = await abrir();
+  const LOTE = 500;
+  for (let i = 0; i < total; i += LOTE) {
+    const linhas = await checar(await sb.rpc('checar_duplicados', {
+      p_cnpjs: C.slice(i, i + LOTE), p_tel_keys: F.slice(i, i + LOTE), p_email_keys: E.slice(i, i + LOTE),
+    }));
+    for (const r of linhas || []) out[r.tipo].set(r.chave, !!r.meu);
+  }
+  return out;
+}
+
+/**
+ * Índice em memória para deduplicar um lote inteiro sem N consultas. Contém os leads do
+ * próprio usuário (o RLS não mostra os dos colegas); passando `candidatos`
+ * ({ cnpjs, fones, emails } do arquivo que vai ser importado) ele também consulta o banco
+ * por quem já tem essas chaves em outra carteira e registra um marcador `alheio: true`.
+ */
+export async function cacheDedup(candidatos) {
   const leads = (await todos('lead')).filter((l) => !l.deleted_at);
   const cache = { porCnpj: new Map(), porFone: new Map(), porEmail: new Map(), leads };
   for (const l of leads) {
     if (l.cnpj) cache.porCnpj.set(l.cnpj, l);
     if (l.tel_key) cache.porFone.set(l.tel_key, l);
     if (l.email_key) cache.porEmail.set(l.email_key, l);
+  }
+  if (candidatos) {
+    const alheios = await consultarAlheios(candidatos);
+    for (const [k, meu] of alheios.cnpj) if (!meu && !cache.porCnpj.has(k)) cache.porCnpj.set(k, leadAlheio({ cnpj: k }));
+    for (const [k, meu] of alheios.telefone) if (!meu && !cache.porFone.has(k)) cache.porFone.set(k, leadAlheio({ tel_key: k }));
+    for (const [k, meu] of alheios.email) if (!meu && !cache.porEmail.has(k)) cache.porEmail.set(k, leadAlheio({ email_key: k }));
   }
   cache.registrar = (l) => {
     if (l.cnpj) cache.porCnpj.set(l.cnpj, l);
@@ -564,6 +703,13 @@ export function normalizarLead(l) {
   };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
+}
+
+/** CNPJs que já têm lead ativo em qualquer carteira (RPC `cnpjs_com_lead`) — só o CNPJ, sem dados do lead. */
+export async function cnpjsComLead() {
+  const sb = await abrir();
+  const linhas = await checar(await sb.rpc('cnpjs_com_lead'));
+  return new Set((linhas || []).map((r) => (typeof r === 'string' ? r : Object.values(r)[0])).filter(Boolean));
 }
 
 export async function criarLead(dados) {
@@ -642,6 +788,107 @@ export function ordenarFila(leads) {
   });
 }
 
+/* ═══════════════ Operações em lote e "devolver à base" ═══════════════ */
+
+/**
+ * Aplica o MESMO patch a vários leads de uma vez (lotes de 200 ids na URL). O RLS decide quais
+ * linhas o usuário pode alterar; devolve quantas foram de fato atualizadas. Substitui os laços
+ * "um salvarLead por lead" das ações em lote — uma requisição por 200 em vez de uma por lead.
+ */
+export async function atualizarLeads(ids, patch) {
+  const lista = [...new Set((ids || []).filter(Boolean))];
+  if (!lista.length) return 0;
+  const sb = await abrir();
+  const corpo = { ...semUndefined(patch), updated_at: new Date().toISOString() };
+  const LOTE = 200;
+  let n = 0;
+  for (let i = 0; i < lista.length; i += LOTE) {
+    const r = await checar(await sb.from('lead').update(corpo).in('id', lista.slice(i, i + LOTE)).select('id'));
+    n += r.length;
+  }
+  return n;
+}
+
+/**
+ * "Devolver à base": o lead sai da carteira (soft delete + motivo), o CNPJ fica livre pelo
+ * índice único parcial e a empresa volta a aparecer em Prospecção. Dá para restaurar depois.
+ */
+export const devolverLeads = (ids, motivo) => atualizarLeads(ids, {
+  deleted_at: new Date().toISOString(),
+  devolvido_em: new Date().toISOString(),
+  devolvido_motivo: motivo || null,
+  proxima_acao_em: null,
+});
+
+/** Traz de volta leads devolvidos. Um CNPJ que ganhou outro lead nesse meio-tempo não volta (conflito). */
+export async function restaurarLeads(ids) {
+  const conflitos = [];
+  let ok = 0;
+  for (const id of new Set(ids)) {
+    try {
+      ok += await atualizarLeads([id], {
+        deleted_at: null, devolvido_em: null, devolvido_motivo: null, proxima_acao_em: hojeISO(),
+      });
+    } catch (e) {
+      if (e.codigo === '23505') conflitos.push(id); else throw e;
+    }
+  }
+  return { ok, conflitos };
+}
+
+/** Exclusão física (só gestor, pelo RLS). As interações do lead vão junto (ON DELETE CASCADE). */
+export async function excluirLeadsDefinitivo(ids) {
+  const lista = [...new Set((ids || []).filter(Boolean))];
+  const sb = await abrir();
+  let n = 0;
+  for (let i = 0; i < lista.length; i += 200) {
+    const r = await checar(await sb.from('lead').delete().in('id', lista.slice(i, i + 200)).select('id'));
+    n += r.length;
+  }
+  return n;
+}
+
+/* ═══════════════ Listas de importação ═══════════════ */
+// Uma lista é uma linha de `import_lote` com nome. Os leads apontam para ela por
+// `lead.import_lote_id`. Importar cria a lista ANTES dos leads e carimba cada um.
+
+export async function listasDeImportacao() {
+  return (await todos('import_lote')).filter((l) => !l.deleted_at);
+}
+
+export async function criarLista({ nome, descricao, agente_id, tipo = 'manual', arquivo = null }) {
+  const limpo = String(nome || '').trim();
+  if (!limpo) throw new Error('A lista precisa de um nome.');
+  return registrarLote({ tipo, agente_id, nome: limpo, descricao: descricao || null, arquivo, atualizado_em: new Date().toISOString() });
+}
+
+export async function salvarLista(lista) {
+  const nome = String(lista.nome || '').trim();
+  if (!nome) throw new Error('A lista precisa de um nome.');
+  return put('import_lote', { ...lista, nome, atualizado_em: new Date().toISOString() });
+}
+
+/** Exclui a lista (soft delete). Os leads ficam na carteira sem lista — ou voltam à base, se pedido. */
+export async function excluirLista(id, { devolverLeads: devolver = false } = {}) {
+  const leads = (await todos('lead', 'import_lote_id', id)).filter((l) => !l.deleted_at);
+  const ids = leads.map((l) => l.id);
+  if (ids.length) {
+    if (devolver) {
+      await atualizarLeads(ids, {
+        import_lote_id: null, deleted_at: new Date().toISOString(), devolvido_em: new Date().toISOString(),
+        devolvido_motivo: 'Lista excluída', proxima_acao_em: null,
+      });
+    } else {
+      await atualizarLeads(ids, { import_lote_id: null });
+    }
+  }
+  const lista = await get('import_lote', id);
+  if (lista) await put('import_lote', { ...lista, deleted_at: new Date().toISOString(), atualizado_em: new Date().toISOString() });
+  return ids.length;
+}
+
+export const moverParaLista = (ids, listaId) => atualizarLeads(ids, { import_lote_id: listaId || null });
+
 /* ═══════════════ Interação ═══════════════ */
 
 /**
@@ -650,7 +897,7 @@ export function ordenarFila(leads) {
  * descrito na seção 5.4 — o superior continua vendo uma linha por lead.
  */
 export async function registrarInteracao({ lead, agente_id, canal, sentido = 'saida',
-  resultado, status_apos, descricao, proxima_acao_em, status_motivo, ocorrido_em }) {
+  resultado, status_apos, descricao, proxima_acao_em, status_motivo, ocorrido_em, contaTentativa }) {
   const agora = new Date().toISOString();
   const inter = {
     id: uuid(),
@@ -669,7 +916,8 @@ export async function registrarInteracao({ lead, agente_id, canal, sentido = 'sa
   const dia = dataLocal(inter.ocorrido_em || agora);
   const atualizado = {
     ...lead,
-    tentativas: (lead.tentativas || 0) + (sentido === 'saida' ? 1 : 0),
+    // anotações administrativas (ex.: "Concluído") passam contaTentativa:false — não são abordagem
+    tentativas: (lead.tentativas || 0) + ((contaTentativa ?? sentido === 'saida') ? 1 : 0),
     ultimo_contato_em: dia,
     primeiro_contato_em: lead.primeiro_contato_em || dia,
     status: status_apos || lead.status,
@@ -703,16 +951,21 @@ export async function registrarLote(dados) {
 // Mesmo com dado permanente no Supabase, o export JSON continua útil: mover
 // entre projetos Supabase, backup fora de banda, ou auditoria pontual.
 
+// Contas (`profiles`) e auditoria ficam FORA de apagar/restaurar: são a identidade de quem está
+// logado e estão amarradas ao Supabase Auth — apagar isso trancaria todo mundo para fora.
+const LOJAS_DADOS = LOJAS.filter((l) => l !== 'profiles');
+
 export async function exportarBackup() {
-  const dump = { app: 'lex-prospecta', versao: VERSAO_BACKUP, exportado_em: new Date().toISOString(), dados: {} };
+  const dump = { app: 'wattscout', versao: VERSAO_BACKUP, exportado_em: new Date().toISOString(), dados: {} };
   for (const loja of LOJAS) dump.dados[loja] = await todos(loja);
   return dump;
 }
 
 export async function importarBackup(dump, { substituir = false } = {}) {
-  if (dump?.app !== 'lex-prospecta') throw new Error('Arquivo não é um backup do Lex Prospecta.');
+  // aceita o marcador antigo: backups feitos antes do renome continuam restauráveis
+  if (dump?.app !== 'wattscout' && dump?.app !== 'lex-prospecta') throw new Error('Arquivo não é um backup do WattScout.');
   const resumo = {};
-  for (const loja of LOJAS) {
+  for (const loja of LOJAS_DADOS) {
     const registros = dump.dados?.[loja] || [];
     if (substituir) await limparLoja(loja);
     // normaliza leads antigos (inclusive de backups da era IndexedDB) para reconstruir os campos derivados
@@ -726,7 +979,8 @@ export async function importarBackup(dump, { substituir = false } = {}) {
 }
 
 export async function apagarTudo() {
-  for (const loja of LOJAS) await limparLoja(loja);
+  // ordem inversa das dependências: interação → lead → empresa… (FKs); contas ficam
+  for (const loja of [...LOJAS_DADOS].reverse()) await limparLoja(loja);
   _aliasIndex = null;
 }
 

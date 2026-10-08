@@ -1,17 +1,15 @@
-// views/conversas.js — "CRM completo para lidar com as conversas", dentro da
-// regra que o plano já fixou: a ferramenta PREPARA e REGISTRA, nunca envia.
+// views/conversas.js — Comunicações: caixa de entrada em três painéis (lista · conversa · contexto).
 //
-// O que muda aqui não é permissão de disparo — é a LENTE. Em vez de olhar os
-// leads (Minha fila), esta tela olha os TOQUES: uma caixa de entrada ordenada
-// pelo contato mais recente, com sinal claro de "esperando resposta há quanto
-// tempo" e o canal de cada toque. Mesma base de dados (`interacao` + `lead`),
-// visão de conversa em vez de visão de tarefa. Abre o mesmo cockpit de sempre.
+// Regra do produto: a ferramenta PREPARA e REGISTRA, nunca envia. A "conversa" é o histórico de toques de um
+// lead (`interacao`) — não existe tabela de mensagens. O painel do meio reúne o histórico e o formulário de
+// registro do toque; o da direita, o contexto do lead (script de abordagem, links, dados). É o MESMO cockpit
+// da gaveta e da página do lead (views/cockpit.js), só montado em colunas.
 
-import { h, fmtData, fmtDataHora, diasEntre, hojeISO, debounce, dataLocal } from '../util.js';
-import { CANAIS, RESULTADO_MAP, statusLabel, origemLabel } from '../seed.js';
-import { todos, buscarLeads, get } from '../db.js';
-import { cabecalhoPagina, tabela, badge, badgeStatus, vazio, kpi, pills, toast } from '../ui.js';
-import { abrirCockpit } from './cockpit.js';
+import { h, fmtDataHora, diasEntre, debounce, dataLocal, hojeISO, limpar } from '../util.js';
+import { CANAIS, RESULTADO_MAP, origemLabel } from '../seed.js';
+import { todos, buscarLeads } from '../db.js';
+import { cabecalhoPagina, badge, badgeStatus, vazio, kpi, pills, breadcrumb, icone } from '../ui.js';
+import { criarCockpit } from './cockpit.js';
 
 const CANAL_MAP = Object.fromEntries(CANAIS.map((c) => [c.v, c]));
 
@@ -19,18 +17,27 @@ const FILTROS = [
   { v: 'aguardando', label: 'Aguardando resposta' },
   { v: 'recentes', label: 'Últimos 7 dias' },
   { v: 'sem_retorno', label: 'Sem retorno há 15+ dias' },
-  { v: 'todas', label: 'Todas as conversas' },
+  { v: 'todas', label: 'Todas' },
 ];
 
 export async function viewConversas(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
-
-  const estado = { escopo: ehGestor ? 'todos' : 'meus', filtro: 'aguardando', canal: '', texto: '' };
+  const estado = {
+    escopo: ehGestor ? 'todos' : 'meus', filtro: 'aguardando', canal: '', texto: '', selecionado: null,
+  };
 
   const raiz = h('div', { class: 'pagina' });
-  const areaKpis = h('div', { class: 'kpis' });
-  const areaFiltros = h('div', {});
-  const areaLista = h('div', {});
+  const areaKpis = h('div', { class: 'kpis kpis--fina' });
+  const areaFiltros = h('div', { class: 'caixa__filtros' });
+  const areaLista = h('div', { class: 'caixa__itens' });
+  const painelConversa = h('section', { class: 'caixa__conversa', 'aria-label': 'Conversa' });
+  const painelContexto = h('aside', { class: 'caixa__contexto', 'aria-label': 'Contexto do lead' });
+  const caixa = h('div', { class: 'caixa' },
+    h('section', { class: 'caixa__lista', 'aria-label': 'Conversas' }, areaFiltros, areaLista),
+    painelConversa, painelContexto);
+
+  let base = { linhas: [], mapaAgente: new Map() };
+  let cockpitAtivo = null;
 
   async function carregarBase() {
     const [leads, interacoes, perfis] = await Promise.all([
@@ -40,21 +47,20 @@ export async function viewConversas(params, ctxApp) {
     ]);
     const mapaAgente = new Map(perfis.map((p) => [p.id, p.nome]));
     const leadsPorId = new Map(leads.map((l) => [l.id, l]));
-
     // última interação por lead — o que define a posição na "caixa de entrada"
     const ultimaPorLead = new Map();
     for (const i of interacoes) {
-      if (!leadsPorId.has(i.lead_id)) continue; // fora do escopo (owner/deleted)
+      if (!leadsPorId.has(i.lead_id)) continue; // fora do escopo (dono/devolvido)
       const atual = ultimaPorLead.get(i.lead_id);
       if (!atual || i.ocorrido_em > atual.ocorrido_em) ultimaPorLead.set(i.lead_id, i);
     }
-
     const linhas = [...ultimaPorLead.entries()]
       .map(([leadId, ultima]) => ({ lead: leadsPorId.get(leadId), ultima }))
       .sort((a, b) => (a.ultima.ocorrido_em < b.ultima.ocorrido_em ? 1 : -1));
-
-    return { linhas, mapaAgente };
+    base = { linhas, mapaAgente };
   }
+
+  const esperando = (r) => r.ultima.sentido === 'saida' && ['abordado', 'em_conversa'].includes(r.lead.status);
 
   function aplicarFiltros(linhas) {
     const hoje = hojeISO();
@@ -62,112 +68,140 @@ export async function viewConversas(params, ctxApp) {
     if (estado.canal) out = out.filter((r) => r.ultima.canal === estado.canal);
     if (estado.texto) {
       const q = estado.texto.toLowerCase();
-      out = out.filter((r) =>
-        (r.lead.razao_social || '').toLowerCase().includes(q)
+      out = out.filter((r) => (r.lead.razao_social || '').toLowerCase().includes(q)
         || (r.lead.contato_nome || '').toLowerCase().includes(q)
         || (r.ultima.descricao || '').toLowerCase().includes(q));
     }
     switch (estado.filtro) {
-      case 'aguardando':
-        return out.filter((r) => r.ultima.sentido === 'saida'
-          && ['abordado', 'em_conversa'].includes(r.lead.status));
-      case 'recentes':
-        return out.filter((r) => diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) <= 7);
-      case 'sem_retorno':
-        return out.filter((r) => r.ultima.sentido === 'saida'
-          && ['abordado', 'em_conversa'].includes(r.lead.status)
-          && diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) >= 15);
-      default:
-        return out;
+      case 'aguardando': return out.filter(esperando);
+      case 'recentes': return out.filter((r) => diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) <= 7);
+      case 'sem_retorno': return out.filter((r) => esperando(r) && diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) >= 15);
+      default: return out;
     }
   }
 
-  function linhaConversa(r, mapaAgente) {
+  function itemDaLista(r) {
     const c = CANAL_MAP[r.ultima.canal];
     const dias = diasEntre(dataLocal(r.ultima.ocorrido_em), hojeISO());
-    const aguardando = r.ultima.sentido === 'saida' && ['abordado', 'em_conversa'].includes(r.lead.status);
+    const aguardando = esperando(r);
+    const ativo = r.lead.id === estado.selecionado;
     return h('article', {
-      class: `conversa ${aguardando && dias >= 7 ? 'conversa--atrasada' : ''}`,
-      tabindex: '0',
-      onclick: () => abrirCockpitPara(r.lead.id),
-      onkeydown: (e) => { if (e.key === 'Enter') abrirCockpitPara(r.lead.id); },
+      class: `conversa${aguardando && dias >= 7 ? ' conversa--atrasada' : ''}${ativo ? ' is-selecionada' : ''}`,
+      tabindex: '0', 'aria-current': ativo ? 'true' : null, dataset: { lead: r.lead.id },
+      onclick: () => selecionar(r.lead.id),
+      onkeydown: (e) => { if (e.key === 'Enter') selecionar(r.lead.id); },
     },
-      h('div', { class: 'conversa__ico', title: c?.label || r.ultima.canal }, c?.icone || '•'),
-      h('div', { class: 'conversa__corpo' },
-        h('div', { class: 'conversa__topo' },
-          h('strong', {}, r.lead.razao_social || r.lead.contato_nome || '(sem nome)'),
-          badgeStatus(r.lead.status),
-          aguardando ? badge(dias === 0 ? 'aguardando hoje' : `aguardando há ${dias}d`, dias >= 15 ? 'vermelho' : dias >= 7 ? 'ambar' : 'azul') : null,
-          r.ultima.sentido === 'entrada' ? badge('respondeu', 'verde') : null),
-        h('p', { class: 'conversa__prevista' }, r.ultima.descricao || h('em', {}, 'sem descrição registrada')),
-        h('div', { class: 'conversa__rodape' },
-          h('span', {}, mapaAgente.get(r.lead.owner_id) || '—'),
-          h('span', {}, fmtDataHora(r.ultima.ocorrido_em)),
-          r.ultima.resultado ? h('span', {}, RESULTADO_MAP[r.ultima.resultado]?.label || r.ultima.resultado) : null,
-          badge(origemLabel(r.lead.origem), 'cinza'))));
+    h('div', { class: 'conversa__ico', title: c?.label || r.ultima.canal }, c?.icone || '•'),
+    h('div', { class: 'conversa__corpo' },
+      h('div', { class: 'conversa__topo' },
+        h('strong', {}, r.lead.razao_social || r.lead.contato_nome || '(sem nome)'),
+        aguardando ? badge(dias === 0 ? 'aguardando hoje' : `aguardando há ${dias}d`, dias >= 15 ? 'vermelho' : dias >= 7 ? 'ambar' : 'azul') : null,
+        r.ultima.sentido === 'entrada' ? badge('respondeu', 'verde') : null),
+      h('p', { class: 'conversa__prevista' }, r.ultima.descricao || h('em', {}, 'sem descrição registrada')),
+      h('div', { class: 'conversa__rodape' },
+        h('span', {}, base.mapaAgente.get(r.lead.owner_id) || '—'),
+        h('span', {}, fmtDataHora(r.ultima.ocorrido_em)),
+        r.ultima.resultado ? h('span', {}, RESULTADO_MAP[r.ultima.resultado]?.label || r.ultima.resultado) : null)));
   }
 
-  async function abrirCockpitPara(leadId) {
-    const lead = await get('lead', leadId);
-    if (!lead) { toast('Lead não encontrado (pode ter sido removido).', 'erro'); return; }
-    abrirCockpit({ lead, perfil, aoMudar: () => desenhar() });
+  /* ═══════════ Conversa selecionada: o mesmo cockpit, em duas colunas ═══════════ */
+
+  function limparSelecao() {
+    cockpitAtivo?.desmontar();
+    cockpitAtivo = null;
+    estado.selecionado = null;
+    caixa.classList.remove('caixa--detalhe');
+    painelConversa.replaceChildren(h('div', { class: 'caixa__vazio' },
+      icone('conversas'), h('h3', {}, 'Selecione uma conversa'),
+      h('p', { class: 'texto-fraco' }, 'O histórico, o formulário de registro e o script de abordagem aparecem aqui.')));
+    painelContexto.replaceChildren();
   }
 
-  async function desenhar() {
-    const { linhas, mapaAgente } = await carregarBase();
-    const filtradas = aplicarFiltros(linhas);
+  async function selecionar(leadId) {
+    const linha = base.linhas.find((r) => r.lead.id === leadId);
+    if (!linha) return limparSelecao();
+    estado.selecionado = leadId;
+    cockpitAtivo?.desmontar();
+    caixa.classList.add('caixa--detalhe');
+    areaLista.querySelectorAll('.conversa').forEach((el) => {
+      el.classList.toggle('is-selecionada', el.dataset.lead === leadId);
+    });
 
+    const cockpit = await criarCockpit({
+      lead: linha.lead, perfil,
+      aoMudar: async () => { await carregarBase(); desenharLista(); },
+      aoSair: () => { limparSelecao(); carregarBase().then(desenharLista); },
+    });
+    cockpitAtivo = cockpit;
+    cockpit.montar((s, ctx) => {
+      const { d, atual } = ctx;
+      painelConversa.replaceChildren(
+        h('header', { class: 'caixa__cab' },
+          h('button', { class: 'btn btn--mini caixa__voltar', type: 'button', onclick: limparSelecao }, '← Conversas'),
+          h('div', {},
+            h('h2', {}, d.razao || d.contato || 'Lead sem nome'),
+            h('div', { class: 'cockpit__meta' }, badgeStatus(atual.status), badge(origemLabel(atual.origem), 'azul'))),
+          h('a', { class: 'btn btn--mini', href: `#/lead/${atual.id}` }, 'Abrir lead')),
+        s.timeline, s.registrar);
+      painelContexto.replaceChildren(s.fatos, s.abordar);
+    }, painelConversa);
+  }
+
+  /* ═══════════ Lista, filtros e KPIs ═══════════ */
+
+  function desenharLista() {
+    const { linhas } = base;
     const hoje = hojeISO();
-    const aguardando = linhas.filter((r) => r.ultima.sentido === 'saida' && ['abordado', 'em_conversa'].includes(r.lead.status));
+    const aguardando = linhas.filter(esperando);
     const semRetorno15 = aguardando.filter((r) => diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) >= 15);
-    const hoje7 = linhas.filter((r) => diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) <= 7);
     const responderam = linhas.filter((r) => r.ultima.sentido === 'entrada'
       && diasEntre(dataLocal(r.ultima.ocorrido_em), hoje) <= 7).length;
-
     areaKpis.replaceChildren(
       kpi('Conversas ativas', String(linhas.length)),
       kpi('Aguardando resposta', String(aguardando.length)),
-      kpi('Sem retorno 15d+', String(semRetorno15.length), semRetorno15.length ? 'considere reagendar ou marcar sem_contato' : 'em dia'),
+      kpi('Sem retorno 15d+', String(semRetorno15.length), semRetorno15.length ? 'reagende ou marque sem contato' : 'em dia'),
       kpi('Responderam (7d)', String(responderam)));
 
     const canaisPresentes = [...new Set(linhas.map((r) => r.ultima.canal))];
-    areaFiltros.replaceChildren(
-      pills(FILTROS.map((f) => ({ ...f })), estado.filtro, (v) => { estado.filtro = v; desenhar(); }),
-      h('div', { class: 'filtros', style: 'margin-top:8px' },
-        ehGestor ? pills(
-          [{ v: 'meus', label: 'Minhas' }, { v: 'todos', label: 'Todas (equipe)' }],
-          estado.escopo, (v) => { estado.escopo = v; desenhar(); },
-        ) : null,
-        canaisPresentes.length > 1
-          ? (() => {
-            const s = h('select', {},
-              h('option', { value: '' }, 'Todos os canais'),
-              canaisPresentes.map((c) => h('option', { value: c, selected: c === estado.canal }, CANAL_MAP[c]?.label || c)));
-            s.addEventListener('change', () => { estado.canal = s.value; desenhar(); });
-            return s;
-          })()
-          : null,
-        (() => {
-          const i = h('input', { type: 'search', class: 'busca', placeholder: 'Buscar por nome ou conteúdo…', 'aria-label': 'Buscar conversas', value: estado.texto });
-          i.addEventListener('input', debounce(() => { estado.texto = i.value.trim(); desenhar(); }, 220));
-          return i;
-        })()));
+    const seletorCanal = canaisPresentes.length > 1
+      ? (() => {
+        const s = h('select', { 'aria-label': 'Filtrar por canal' },
+          h('option', { value: '' }, 'Todos os canais'),
+          canaisPresentes.map((c) => h('option', { value: c, selected: c === estado.canal }, CANAL_MAP[c]?.label || c)));
+        s.addEventListener('change', () => { estado.canal = s.value; desenharLista(); });
+        return s;
+      })()
+      : null;
+    const busca = h('input', {
+      type: 'search', class: 'busca', placeholder: 'Buscar por nome ou conteúdo…', 'aria-label': 'Buscar conversas', value: estado.texto,
+    });
+    busca.addEventListener('input', debounce(() => { estado.texto = busca.value.trim(); desenharLista(); }, 220));
 
-    areaLista.replaceChildren(
-      filtradas.length
-        ? h('div', { class: 'lista-conversas' }, filtradas.map((r) => linhaConversa(r, mapaAgente)))
-        : vazio('Nenhuma conversa neste filtro',
-          estado.filtro === 'aguardando'
-            ? 'Nada esperando resposta agora — bom sinal, ou é hora de abordar leads novos.'
-            : 'Ajuste o filtro ou registre toques na fila.'));
+    areaFiltros.replaceChildren(...limpar(
+      pills(FILTROS.map((f) => ({ ...f })), estado.filtro, (v) => { estado.filtro = v; desenharLista(); }),
+      ehGestor ? pills([{ v: 'meus', label: 'Minhas' }, { v: 'todos', label: 'Equipe' }], estado.escopo,
+        async (v) => { estado.escopo = v; await carregarBase(); desenharLista(); }) : null,
+      h('div', { class: 'linha-botoes' }, busca, seletorCanal)));
+
+    const filtradas = aplicarFiltros(linhas);
+    areaLista.replaceChildren(filtradas.length
+      ? h('div', { class: 'lista-conversas' }, filtradas.map(itemDaLista))
+      : vazio('Nenhuma conversa neste filtro',
+        estado.filtro === 'aguardando'
+          ? 'Nada esperando resposta agora — bom sinal, ou é hora de abordar leads novos.'
+          : 'Ajuste o filtro ou registre toques em Leads.'));
   }
 
   raiz.append(
-    cabecalhoPagina('Conversas',
+    breadcrumb([{ label: 'Comunicações' }]),
+    cabecalhoPagina('Comunicações',
       'Caixa de entrada dos toques registrados — a ferramenta prepara e registra; quem envia é você, no seu canal'),
-    areaKpis,
-    areaFiltros,
-    areaLista);
-  await desenhar();
+    areaKpis, caixa);
+
+  const inicial = params.lead;           // #/conversas?lead=<id> abre direto a conversa
+  await carregarBase();
+  desenharLista();
+  limparSelecao();
+  if (inicial) await selecionar(inicial);
   return raiz;
 }

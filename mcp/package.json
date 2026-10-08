@@ -1,0 +1,20 @@
+{
+  "name": "wattscout-mcp-cnpj",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Servidor MCP (stdio) que filtra e exporta a base de CNPJ dos dados abertos da Receita Federal, sem passar pelo Casa dos Dados. Pacote separado: o app (raiz) continua sem dependências de runtime.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "baixar": "node --disable-warning=ExperimentalWarning etl/baixar.mjs",
+    "carregar": "node --disable-warning=ExperimentalWarning etl/carregar.mjs",
+    "start": "node --disable-warning=ExperimentalWarning src/server.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
+  }
+}

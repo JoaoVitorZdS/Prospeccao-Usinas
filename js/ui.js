@@ -1,6 +1,6 @@
-// ui.js — primitivas de interface.
-// Os nomes de componente espelham o `helpdesk-fe` (Card/KPI/Badge/PageHeader/Tab)
-// para que o port futuro seja mecânico, como pede a seção 7.
+// ui.js — primitivas de interface do WattScout.
+// Estilos em css/wattscout.css (tokens do Zendesk Garden em vendor/zendesk-garden/).
+// Nada aqui usa innerHTML: DOM sempre via h() ou createElementNS (CSP script-src 'self').
 
 import { h, esc, $, limpar } from './util.js';
 import { STATUS_MAP } from './seed.js';
@@ -333,6 +333,198 @@ export function botaoCopiar(rotulo, obterTexto, { classe = '', atalho } = {}) {
   return b;
 }
 
+/* ═══════════════ Ícones, avatar, menu, abas, chip de filtro ═══════════════ */
+
+// Ícones de traço, desenhados para o WattScout (viewBox 24×24). Montados com
+// createElementNS — nunca innerHTML (CSP e regra do projeto).
+const ICONES = {
+  inicio: [['path', 'M3 11l9-8 9 8M5 9.5V20h5v-6h4v6h5V9.5']],
+  leads: [['circle', 9, 8, 3.5], ['path', 'M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6'], ['path', 'M15.8 4.8a3.5 3.5 0 010 6.4M18 14.3c2.1.7 3.5 2.6 3.5 5.7']],
+  conversas: [['path', 'M4 5h16v11H9.5L4 20.5V5z']],
+  prospeccao: [['circle', 10.5, 10.5, 6.5], ['path', 'M15.5 15.5L21 21']],
+  mercado: [['path', 'M5 20v-8M12 20V5M19 20V9']],
+  relatorios: [['path', 'M21 12a9 9 0 11-9-9v9h9z']],
+  importar: [['path', 'M12 3v12m0 0l-4-4m4 4l4-4M4 17v3h16v-3']],
+  exportar: [['path', 'M12 15V3m0 0L8 7m4-4l4 4M4 17v3h16v-3']],
+  admin: [['path', 'M4 7h9M17 7h3M4 17h3M11 17h9'], ['circle', 15, 7, 2], ['circle', 9, 17, 2]],
+  negocios: [['path', 'M3 4h5v16H3zM10 4h5v10h-5zM17 4h4v13h-4z']],
+  tarefas: [['path', 'M4 4h16v16H4zM8 12l3 3 5-6']],
+  listas: [['path', 'M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01']],
+  busca: [['circle', 11, 11, 6.5], ['path', 'M16 16l5 5']],
+  mais: [['path', 'M12 5v14M5 12h14']],
+  usuario: [['circle', 12, 8, 4], ['path', 'M4 21c0-4 3.6-6 8-6s8 2 8 6']],
+  sair: [['path', 'M9 4H5v16h4M16 8l4 4-4 4M20 12H9']],
+  seta: [['path', 'M6 9l6 6 6-6']],
+  fechar: [['path', 'M6 6l12 12M18 6L6 18']],
+  filtro: [['path', 'M3 5h18l-7 8v6l-4-2v-4z']],
+  raio: [['path', 'M13 2L4 14h7l-1 8 9-12h-7z']],
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+export function icone(nome, { tamanho } = {}) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', `icone${tamanho === 'peq' ? ' icone--peq' : ''}`);
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  for (const [tag, ...v] of ICONES[nome] || []) {
+    const no = document.createElementNS(SVG_NS, tag);
+    if (tag === 'circle') {
+      no.setAttribute('cx', v[0]); no.setAttribute('cy', v[1]); no.setAttribute('r', v[2]);
+    } else {
+      no.setAttribute('d', v[0]);
+    }
+    svg.append(no);
+  }
+  return svg;
+}
+
+/** Iniciais do nome — "Maria Souza" → "MS". */
+export const iniciais = (nome) => {
+  const partes = String(nome || '?').trim().split(/\s+/).filter(Boolean);
+  return ((partes[0]?.[0] || '?') + (partes.length > 1 ? partes.at(-1)[0] : '')).toUpperCase();
+};
+
+export const avatar = (nome, { tamanho } = {}) =>
+  h('span', {
+    class: `avatar${tamanho ? ` avatar--${tamanho}` : ''}`,
+    'aria-hidden': 'true',
+  }, iniciais(nome));
+
+/**
+ * Menu suspenso ancorado a um botão. `itens`: [{ rotulo, icone, onclick, href, perigo }],
+ * `{ sep: true }` para divisória ou `{ cabecalho: Node }` para o bloco do topo.
+ * Fecha com clique fora ou Esc. Devolve o wrapper — é ele que entra na página.
+ */
+export function menuSuspenso(botao, itens, { alinhar = 'dir' } = {}) {
+  const ancora = h('div', { class: 'menu-ancora' }, botao);
+  let aberto = null;
+  const fechar = () => {
+    if (!aberto) return;
+    aberto.remove();
+    aberto = null;
+    botao.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('mousedown', foraClique, true);
+    document.removeEventListener('keydown', teclaEsc, true);
+    window.removeEventListener('scroll', aoRolar, true);
+    window.removeEventListener('resize', fechar);
+  };
+  const foraClique = (e) => { if (!ancora.contains(e.target)) fechar(); };
+  const teclaEsc = (e) => { if (e.key === 'Escape') { fechar(); botao.focus(); } };
+  // rolar o próprio menu (lista longa) não pode fechá-lo; rolar a página por baixo, sim
+  const aoRolar = (e) => { if (!aberto?.contains(e.target)) fechar(); };
+  /** `position: fixed` a partir do botão: colunas e tabelas com `overflow` não cortam o menu. */
+  const posicionar = () => {
+    const b = botao.getBoundingClientRect();
+    const m = aberto.getBoundingClientRect();
+    const folga = 8;
+    let topo = b.bottom + 6;
+    if (topo + m.height > innerHeight - folga) topo = Math.max(folga, b.top - 6 - m.height);
+    let esq = alinhar === 'esq' ? b.left : b.right - m.width;
+    esq = Math.min(Math.max(folga, esq), innerWidth - m.width - folga);
+    Object.assign(aberto.style, { position: 'fixed', top: `${topo}px`, left: `${esq}px`, right: 'auto' });
+  };
+  const abrir = () => {
+    aberto = h('div', { class: `menu${alinhar === 'esq' ? ' menu--esq' : ''}`, role: 'menu' },
+      itens.filter(Boolean).map((it) => {
+        if (it.sep) return h('div', { class: 'menu__sep', role: 'separator' });
+        if (it.cabecalho) return h('div', { class: 'menu__cab' }, it.cabecalho);
+        const Tag = it.href ? 'a' : 'button';
+        return h(Tag, {
+          class: `menu__item${it.perigo ? ' menu__item--perigo' : ''}`,
+          role: 'menuitem',
+          href: it.href || null,
+          type: it.href ? null : 'button',
+          onclick: () => { fechar(); it.onclick?.(); },
+        }, it.icone ? icone(it.icone, { tamanho: 'peq' }) : null, it.rotulo);
+      }));
+    ancora.append(aberto);
+    posicionar();
+    botao.setAttribute('aria-expanded', 'true');
+    document.addEventListener('mousedown', foraClique, true);
+    document.addEventListener('keydown', teclaEsc, true);
+    aberto.querySelector('.menu__item')?.focus({ preventScroll: true });
+    window.addEventListener('scroll', aoRolar, true);
+    window.addEventListener('resize', fechar);
+  };
+  botao.setAttribute('aria-haspopup', 'menu');
+  botao.setAttribute('aria-expanded', 'false');
+  botao.addEventListener('click', () => (aberto ? fechar() : abrir()));
+  return ancora;
+}
+
+/** Abas: `opcoes` = [{ v, label }]. */
+export function abas(opcoes, valorAtual, aoTrocar) {
+  const cx = h('div', { class: 'abas', role: 'tablist' });
+  for (const o of opcoes) {
+    cx.append(h('button', {
+      type: 'button', role: 'tab', class: `aba${o.v === valorAtual ? ' is-ativa' : ''}`,
+      'aria-selected': String(o.v === valorAtual), dataset: { v: o.v },
+      onclick: () => {
+        cx.querySelectorAll('.aba').forEach((a) => {
+          const ativa = a.dataset.v === o.v;
+          a.classList.toggle('is-ativa', ativa);
+          a.setAttribute('aria-selected', String(ativa));
+        });
+        aoTrocar(o.v);
+      },
+    }, o.label));
+  }
+  return cx;
+}
+
+/** Migalhas: [{ label, rota?, params? }] — o último item é a página atual. */
+export function breadcrumb(itens) {
+  return h('nav', { class: 'breadcrumb', 'aria-label': 'Você está em' },
+    itens.map((it, i) => [
+      i > 0 ? h('span', { class: 'breadcrumb__sep', 'aria-hidden': 'true' }, '›') : null,
+      it.rota
+        ? h('a', { href: `#/${it.rota}${it.params ? `?${new URLSearchParams(it.params)}` : ''}` }, it.label)
+        : h('span', { 'aria-current': 'page' }, it.label),
+    ]));
+}
+
+/**
+ * Chip de filtro com popover (padrão das listas do Zendesk Sell). `rotulo` é o nome do
+ * filtro; `resumo` o valor atual em texto (vazio = filtro inativo); `corpo` o conteúdo
+ * do popover (um <select>, intervalo de datas…); `aoLimpar` zera o filtro.
+ */
+export function chipFiltro({ rotulo, resumo = '', corpo, aoLimpar, aberto = false }) {
+  const ativo = !!resumo;
+  const popover = h('div', { class: 'chip-filtro__popover', hidden: !aberto }, corpo);
+  const botao = h('button', {
+    type: 'button', class: 'chip-filtro__botao', 'aria-expanded': String(aberto),
+    onclick: () => {
+      const abrir = popover.hidden;
+      popover.hidden = !abrir;
+      botao.setAttribute('aria-expanded', String(abrir));
+      if (abrir) popover.querySelector('input,select,textarea')?.focus();
+    },
+  }, ativo ? `${rotulo}: ${resumo}` : rotulo,
+  ativo ? null : icone('seta', { tamanho: 'peq' }));
+  const raiz = h('div', { class: `chip-filtro${ativo ? ' is-ativo' : ''}` }, botao,
+    ativo && aoLimpar
+      ? h('button', { type: 'button', class: 'chip-filtro__x', 'aria-label': `Limpar filtro ${rotulo}`, onclick: aoLimpar }, '×')
+      : null,
+    popover);
+  chipsAbertos.add({ raiz, popover, botao });
+  return raiz;
+}
+
+// Um único listener global fecha os popovers de chip quando o clique cai fora deles
+// (em vez de um listener novo a cada render da tela). Chips que saíram do DOM são descartados.
+const chipsAbertos = new Set();
+if (typeof document !== 'undefined') document.addEventListener('mousedown', (e) => {
+  for (const c of chipsAbertos) {
+    if (!c.raiz.isConnected) { chipsAbertos.delete(c); continue; }
+    if (!c.popover.hidden && !c.raiz.contains(e.target)) {
+      c.popover.hidden = true;
+      c.botao.setAttribute('aria-expanded', 'false');
+    }
+  }
+});
+
 /* ═══════════════ Roteador ═══════════════ */
 
 const rotas = new Map();
@@ -340,24 +532,43 @@ let rotaAtual = null;
 
 export const registrarRota = (nome, render) => rotas.set(nome, render);
 
+// Rotas que mudaram de nome continuam funcionando (links salvos, atalhos do manifest): #/fila → #/leads.
+const aliases = new Map();
+export const aliasRota = (de, para) => aliases.set(de, para);
+
+const montarHash = (nome, params) => {
+  const limpo = Object.entries(params || {}).filter(([, v]) => v !== '' && v != null && v !== false);
+  return `#/${nome}${limpo.length ? `?${new URLSearchParams(limpo)}` : ''}`;
+};
+
 export function navegar(nome, params) {
-  const hash = `#/${nome}${params ? `?${new URLSearchParams(params)}` : ''}`;
+  const hash = montarHash(nome, params);
   if (location.hash === hash) return renderRota();
   location.hash = hash;
 }
 
+/** Espelha o estado dos filtros na URL SEM re-renderizar a tela (replaceState não
+ *  dispara `hashchange`) — assim o link da página já reabre filtrado. */
+export function sincronizarHash(nome, params) {
+  const hash = montarHash(nome, params);
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
 export async function renderRota() {
-  const bruto = location.hash.replace(/^#\/?/, '') || 'fila';
-  const [nome, qs] = bruto.split('?');
-  const render = rotas.get(nome) || rotas.get('fila');
+  const bruto = location.hash.replace(/^#\/?/, '') || 'inicio';
+  const [caminho, qs] = bruto.split('?');
+  // "lead/abc-123" → rota "lead", com o resto do caminho em params._resto
+  const [primeiro, ...restoCaminho] = caminho.split('/');
+  const nome = aliases.get(primeiro) || primeiro;
+  const render = rotas.get(nome) || rotas.get('inicio');
   const alvo = $('#conteudo');
   rotaAtual = nome;
-  document.querySelectorAll('.nav__item').forEach((a) =>
+  document.querySelectorAll('.rail__item').forEach((a) =>
     a.classList.toggle('is-ativa', a.dataset.rota === nome));
   alvo.setAttribute('aria-busy', 'true');
   alvo.replaceChildren(h('div', { class: 'carregando' }, 'Carregando…'));
   try {
-    const el = await render(Object.fromEntries(new URLSearchParams(qs || '')));
+    const el = await render({ ...Object.fromEntries(new URLSearchParams(qs || '')), _resto: restoCaminho.join('/') });
     if (rotaAtual !== nome) return; // navegou de novo enquanto carregava
     alvo.replaceChildren(el);
   } catch (e) {

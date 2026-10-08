@@ -165,7 +165,7 @@ export function htmlRelatorio(leads, ctx, { titulo = 'Leads prontos para contrat
 <body>
 <header>
   <h1>${esc(titulo)}</h1>
-  <p>${leads.length} lead(s) · gerado em ${fmtData(hojeISO())}${autor ? ` por ${esc(autor)}` : ''} · Lex Prospecta</p>
+  <p>${leads.length} lead(s) · gerado em ${fmtData(hojeISO())}${autor ? ` por ${esc(autor)}` : ''} · WattScout</p>
 </header>
 ${blocos || '<p>Nenhum lead no filtro selecionado.</p>'}
 <footer>

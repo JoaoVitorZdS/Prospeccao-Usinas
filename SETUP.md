@@ -1,13 +1,13 @@
-# SETUP.md — o que não cabe em código
+# SETUP.md — WattScout: o que não cabe em código
 
 O front-end é **estático** (sem servidor próprio, sem passo de build — abre
 com qualquer servidor HTTP simples), mas os DADOS são reais: `js/db.js` fala
 com um projeto Supabase de verdade via `@supabase/supabase-js` (vendorado em
-`vendor/`, sem CDN). "Login" ainda é escolher/criar um perfil na primeira vez
-que abre — **ainda não há Entra ID configurado** (isso é fase 2, ver seção
-"RLS e o que falta para autenticação real" abaixo) — mas os leads, toques,
-usinas e empresas já são permanentes e compartilhados entre todos os agentes
-e dispositivos, não uma cópia por navegador.
+`vendor/`, sem CDN). O acesso é por **login com e-mail e senha** (Supabase Auth) e o
+isolamento dos dados é feito por **RLS no banco**: cada agente vê só os próprios leads
+e conversas; gestores veem tudo e são os únicos que mudam papéis de conta (seções
+"Login e contas" e "RLS" abaixo). Leads, toques, usinas e empresas são permanentes e
+compartilhados entre os dispositivos de quem tem acesso, não uma cópia por navegador.
 
 O Vercel entra só como HOSPEDAGEM ESTÁTICA (o repo já vem pronto pra isso —
 ver "Deploy no Vercel" abaixo); nada aqui depende das funções server-side dele.
@@ -20,12 +20,16 @@ existindo (ver seção seguinte) — sem ele o app mostra "Não consegui iniciar
 na cara, de propósito, em vez de falhar silenciosamente depois.
 
 ```bash
-cd lex-prospecta
-python3 -m http.server 8080
+pnpm dev            # ou: npm run dev
 # → http://localhost:8080
+# outra porta:  pnpm dev -- --port 3000   |   abrir o navegador:  pnpm dev -- --open
 ```
 
-Qualquer servidor estático serve (`npx serve`, `php -S localhost:8080`, Caddy,
+`pnpm dev` roda `scripts/dev.mjs`: um servidor estático em Node puro (sem dependências, sem
+Python), com `Cache-Control: no-store` para você sempre ver a última edição. Só escuta em
+127.0.0.1 por padrão. `pnpm test` roda os testes.
+
+Qualquer outro servidor estático também serve (`npx serve`, `php -S localhost:8080`, Caddy,
 nginx). Para instalar como PWA de verdade (ícone, standalone, offline), é
 preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 (GitHub Pages, Netlify, Vercel, Cloudflare Pages, um Nginx com Let's Encrypt).
@@ -41,7 +45,11 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
    ajusta o que a anterior criou):
    `0001_init.sql` → `0002_fase1_dados_compartilhados.sql` →
    `0003_colunas_faltantes.sql` → `0004_lead_razao_social.sql` →
-   `0005_backlog.sql`.
+   `0005_backlog.sql` → `0006_auth_rls.sql` (login e RLS por usuário — **leia a
+   seção "Login e contas" antes de rodar**: depois dela o app antigo, que usava a
+   chave pública sem login, para de funcionar) → `0007_recasar_distribuidoras.sql`
+   (índices e funções para reassociar a distribuidora das usinas — ver "Backlog") →
+   `0008_empresa_cnpj_aberto.sql` (colunas da Base CNPJ — ver "Base CNPJ e servidor MCP").
    `0003`/`0004` existem porque `empresa`/`lead` ganharam campos (enriquecimento
    de CNPJ, dedup por telefone/e-mail, nome direto no lead) depois que
    `0001_init.sql` foi escrito — sem elas, importar a ANEEL ou criar lead em
@@ -61,7 +69,7 @@ preciso HTTPS — em produção, hospede em qualquer provedor estático com TLS
 5. **`js/supabase-config.js` já está no repo, committado**, apontando pro
    projeto real da equipe. Isso é deliberado, não descuido: a publishable
    key é pública por design (quem protege é o RLS, não o sigilo dela — ver
-   seção "RLS e o que falta para autenticação real"), e o app não tem passo
+   seção "RLS — como o isolamento funciona"), e o app não tem passo
    de build pra injetar variável de ambiente. Se você commitasse via
    `.gitignore` como uma "config local", o deploy no Vercel por integração
    com GitHub (o caminho mais comum — Vercel clona do git, não lê o disco de
@@ -120,10 +128,7 @@ manter esse hábito ao estender o importador.
    o app descompacta e filtra PJ **em streaming**, sem nunca montar o CSV inteiro
    (~1 GB descomprimido) na memória; só usinas PJ (a imensa maioria é PF e é
    descartada no caminho). O CSV do SIGA baixa pronto, sem precisar de ZIP.
-4. Em **Descobrir**, filtre e clique em "Criar leads". Em **Minha fila**, comece
-   a abordar pelo cockpit. Em **Conversas**, acompanhe quem está esperando
-   resposta — é a mesma base de toques, só que organizada como caixa de entrada
-   em vez de lista de tarefas.
+() => b
 
 ## Enriquecimento de contato (OpenCNPJ)
 
@@ -195,10 +200,28 @@ com usina em Minas. Quanto maior a lacuna, mais vale prospectar geração ali.
   pra `concessionaria(codigo)`. RLS aberta pra `anon` como as outras (fase 1).
 - **Tela Backlog** (`js/views/backlog.js`, rota `#/backlog`): barras
   ranqueadas por lacuna, KPIs (distribuidoras aguardando, backlog somado,
-  maior lacuna) e, por linha, **"Ver usinas"** — que abre Descobrir já
-  filtrado naquela distribuidora (`#/descobrir?conc=<codigo>`). Gestor edita o
-  valor inline (✎) e adiciona distribuidora ("+ Distribuidora"); agente vê só
-  leitura. Zerar o valor tira a linha da lista ativa sem apagá-la.
+  maior lacuna) e, por linha, dois links de verdade (`href`, não só clique em JS):
+  **"Ver usinas"** — Prospecção filtrada na distribuidora
+  (`#/descobrir?conc=<codigo>`) — e **"Ver leads (n)"** — a lista de Leads
+  filtrada nela (`#/leads?conc=<codigo>`; gestor vê a equipe toda, agente os
+  dele). O nome da distribuidora também abre Prospecção. Gestor edita o valor
+  inline (✎) e adiciona distribuidora ("+ Distribuidora"); agente vê só leitura.
+  Zerar o valor tira a linha da lista ativa sem apagá-la.
+- **Por que "Ver usinas" podia abrir vazio**: o filtro é por *código* de
+  distribuidora, mas o código só era gravado em `usina_aneel` no momento da
+  importação, quando o nome da ANEEL casava com o cadastro. Usinas importadas
+  antes de uma distribuidora entrar no cadastro (como as permissionárias do
+  backlog) ficaram sem código e as empresas guardaram o **nome bruto** em
+  `empresa.distribuidoras`. Duas correções: o filtro agora aceita também o nome
+  e os aliases cadastrados, e o botão **"Reassociar distribuidoras"** (gestor,
+  no Mercado e na Prospecção) reprocessa a base já importada (migration 0007).
+  O que casa **exatamente** (código, nome ou alias) é ligado sozinho; o que só
+  casa de forma aproximada aparece numa lista para o gestor **conferir** antes
+  de aplicar (ligar a distribuidora errada é pior do que deixar sem ligar).
+- **Prospecção mostra o filtro e o motivo**: chip "Distribuidora: X ✕", link
+  "← Voltar ao Mercado" e, se a lista vier vazia, a razão (nenhuma empresa
+  associada — com o botão de reassociar —, ou "todas já são leads"; o filtro
+  padrão "Esconder quem já é lead" esconde o que a equipe já está trabalhando).
 - **Carga inicial**: `BACKLOG_INICIAL` em `js/seed.js` (do levantamento atual)
   + o `insert` em `supabase/seed.sql`. O app semeia sozinho na primeira visita
   à tela (`semearBacklog()`), só com códigos que já existem em `concessionaria`.
@@ -213,7 +236,39 @@ com usina em Minas. Quanto maior a lacuna, mais vale prospectar geração ali.
 
 Nada de conversão kWp→kWh nem "% de cobertura por usina": a tela é sobre
 *onde* falta e *quanto* falta em números absolutos, e a priorização em
-Descobrir continua sendo por potência somada da empresa.
+Prospecção continua sendo por potência somada da empresa.
+
+## Base CNPJ e servidor MCP (dados abertos da Receita Federal)
+
+O **Casa dos Dados** exibe o cadastro de CNPJ que a **Receita Federal publica todo mês como dado aberto**. O
+WattScout usa essa mesma origem **direto da fonte**, sem raspar o Casa dos Dados (atrás de Cloudflare, com limite
+de plano e termos que proíbem raspagem — por isso o app nunca o fez, ver LIA seção 2-A). Duas peças:
+
+1. **Servidor MCP local** (`mcp/`, ver `mcp/README.md`): baixa os zips da Receita, carrega **já filtrados** (CNAE, UF
+   ou lista de CNPJs; só empresas ativas) num SQLite no seu computador e expõe ferramentas ao Claude para contar,
+   buscar, detalhar e **exportar um CSV**. Pacote separado — o app continua sem dependências de runtime.
+2. **Importar → "Base CNPJ (Receita)"** no app: lê esse CSV (ou qualquer exportação parecida) **sem mapeamento
+   manual** e grava em `empresa` — sem apagar o que já existe (importar um CSV pobre não zera dado enriquecido nem os
+   agregados da ANEEL). Opcionalmente cria os leads das empresas novas, numa lista com nome.
+
+```bash
+pnpm --dir mcp install
+pnpm --dir mcp baixar -- --sem-socios                       # ~5,1 GB de zips da competência mais recente
+pnpm --dir mcp carregar -- --cnae geracao,instalacao --uf SP,MG
+# no Claude (com o servidor wattscout-cnpj aprovado): "exporte as geradoras de SP com telefone"
+```
+
+- **Rode antes** `supabase/migrations/0008_empresa_cnpj_aberto.sql` (colunas `cnaes_secundarios`, `matriz`,
+  `municipio_sede`, `uf_sede`, `fonte_cadastro`, `competencia_cadastro`…). Sem ela a importação avisa qual migration falta.
+- **Prospecção** continua mostrando por padrão só empresas **com usina** (as da ANEEL); desmarque "Só empresas com
+  usina (ANEEL)" para ver as que vieram só da Base CNPJ.
+- **Limites honestos**: não existe CNAE de "energia solar" (usinas se registram em *Geração de energia elétrica*); o
+  dono de uma usina de GD costuma ser de qualquer ramo e só aparece pela ANEEL — use `--cnpjs-arquivo` para cruzar os
+  CNPJs dos donos de usina com o cadastro da Receita. Telefone/e-mail da Receita são, muitas vezes, do contador.
+- **LGPD**: empresário individual/MEI (pessoa física) fica de fora por padrão; CPF de sócio nunca é gravado; a
+  importação aplica o opt-out. `mcp/dados/` não vai para o git nem para o deploy.
+- O arquivo CSV importado é lido inteiro na memória do navegador: exportações de até algumas dezenas de milhares de
+  linhas funcionam bem; para listas maiores, exporte em várias partes (`limite`) ou por UF.
 
 ## Backup
 
@@ -233,37 +288,80 @@ o PWA na Tela de Início **não se aplicam mais aos dados de negócio** (eles
 não estão no navegador). Ainda vale instalar o app pra melhor experiência
 (ícone, tela cheia), mas não é mais uma questão de perder leads.
 
-## RLS e o que falta para autenticação real
+## Login e contas (Supabase Auth)
 
-`supabase/migrations/0002_fase1_dados_compartilhados.sql` deixa Row Level
-Security **ligada** (o Security Advisor do Supabase não reclama de tabela
-exposta) mas com políticas **abertas** pra `anon`/`authenticated` — a
-publishable key acessa e edita qualquer linha de qualquer tabela. Isso não é
-uma chave vazando (ela é pública por design, vai no bundle do navegador de
-qualquer forma) — é a MESMA ausência de isolamento por usuário que a versão
-100% local já tinha, só que agora sobre dado compartilhado e permanente em
-vez de uma cópia por navegador. "Trocar de perfil" na barra superior continua
-sendo escolha de UI, não login: qualquer pessoa com a URL do app pode virar
-qualquer agente, inclusive gestor.
+O WattScout entra por e-mail e senha. Ordem para ligar:
 
-Isso é fase 1, documentado, não escondido. Fase 2 — real Entra ID (seção 5.6
-do plano original) — exige: app registrado no Azure AD como single-tenant,
-Azure Tenant URL travada em `https://login.microsoftonline.com/<tenant-id>`
-(sem isso o `/common` padrão do Supabase aceita qualquer conta Microsoft do
-mundo), claim `xms_edov` no manifest, SMTP próprio (o embutido do Supabase
-manda só 2 e-mails/hora), Custom Access Token Hook pro papel viajar no JWT, e
-então **substituir as políticas abertas de 0002 por políticas reais** (como
-as que `0001_init.sql` já tem escritas — usam `auth.uid()`/`is_gestor()`,
-foram desenhadas pra isso desde o início, só não foram ativadas porque
-dependem de login de verdade existir). Nada disso dá pra fazer numa sessão de
-agente — precisa do tenant Azure AD de vocês e de um fluxo OAuth interativo
-no navegador de alguém com permissão de admin.
+1. **Painel do Supabase → Authentication → Providers → Email**: ligado, com **"Confirm email" LIGADO**.
+   Sem a confirmação, qualquer pessoa assumiria o perfil de outra só digitando o e-mail dela — a
+   migration 0006 só liga conta a perfil por e-mail **confirmado**.
+2. **Authentication → URL Configuration**: em *Site URL* ponha o endereço do app em produção e, em
+   *Redirect URLs*, adicione `https://SEU-DOMINIO/**` e `http://localhost:8080/**` (para `pnpm dev`).
+   Sem isso os links de confirmação e de "esqueci minha senha" caem na página errada.
+3. **Authentication → SMTP Settings**: configure um SMTP próprio. O envio embutido do Supabase manda
+   pouquíssimos e-mails por hora e a equipe vai esbarrar nele ao criar contas.
+4. (Opcional) **Authentication → Policies**: aumente o tamanho mínimo de senha; o app já exige 8
+   caracteres com letras e números.
+5. **Rode `supabase/migrations/0006_auth_rls.sql`** no SQL Editor e, em seguida, **publique o front** (o
+   deploy é pelo GitHub → Vercel). Entre a migration e o deploy o app antigo fica sem acesso; para uma
+   equipe pequena é questão de minutos — faça fora do horário de uso.
+6. **Rode `supabase/tests/rls_teste.sql`** (SQL Editor): ele monta usuários e leads de mentira, confere
+   o isolamento entre agentes, gestor, conta pendente e `anon`, e termina em ROLLBACK (não deixa nada).
+   Cada linha `ok:` nas mensagens é uma garantia confirmada; qualquer `FALHOU:` aborta.
 
-Quando o Entra ID acontecer: rodar o Security Advisor do Supabase antes de
-qualquer go-live (checklist de armadilhas de RLS na seção 5.5 do plano
-original), e lembrar que redirect URIs do OAuth precisam ser atualizados
-**nos dois lados** (Entra e Supabase → Auth → URL Configuration) sempre que o
-domínio mudar — é o bug mais comum de callback quebrado.
+### Como cada pessoa entra
+
+- **Quem já era agente/gestor** (perfil já existente em `profiles`): cria a conta com o **mesmo e-mail**
+  do cadastro, confirma o e-mail e entra — a carteira de leads e o papel vêm junto, nada se perde.
+  Se o e-mail cadastrado não é o que a pessoa usa, corrija antes:
+  `update public.profiles set email = 'novo@dominio.com' where nome = 'Fulano';`
+- **Quem é novo**: cria a conta, confirma o e-mail e fica em **"Aguardando aprovação"** sem ver dado
+  nenhum até um gestor aprovar em *Gestão de contas*. O gestor também pode **pré-cadastrar** o e-mail
+  com o papel certo; quando a pessoa criar a conta, já entra liberada.
+- **Instalação nova, sem nenhum gestor**: a primeira conta confirmada vira gestor. Se isso não for o
+  que você quer, crie o perfil do gestor em `profiles` antes (com o e-mail dele) e só depois abra o app.
+- **Leads de quem ainda não criou conta** continuam no banco e ficam visíveis só para gestores (que
+  podem redistribuí-los) até a pessoa assumir o perfil.
+
+### O que cada papel pode
+
+| | Agente | Gestor / Administrador |
+|---|---|---|
+| Ver leads e conversas | só os próprios | todos |
+| Meu perfil / trocar senha | sim | sim |
+| Aprovar contas, mudar papéis, desativar | não | **sim** (gestão de contas) |
+| Redistribuir leads entre agentes | não | sim |
+| Importar a base ANEEL, editar backlog e distribuidoras | não | sim |
+| Backup, restaurar e apagar tudo | não | sim |
+
+O papel de uma conta só muda pelas funções `alterar_papel` / `definir_ativo` (ficam registradas na tabela
+`perfil_auditoria`), o banco recusa mudar o papel por qualquer outro caminho e **nunca deixa o sistema
+sem um gestor ativo**.
+
+### Limitações conhecidas
+
+- Os links do e-mail usam PKCE: **abra-os no mesmo navegador** em que pediu o cadastro ou a recuperação.
+  Em outro aparelho o e-mail fica confirmado, mas é preciso entrar com a senha (ou pedir novo link).
+- Não há login social nem Entra ID — só e-mail e senha. Entra ID continua possível no futuro (a
+  `reivindicar_perfil` liga qualquer conta do Supabase Auth pelo e-mail).
+
+## RLS — como o isolamento funciona
+
+`0006_auth_rls.sql` troca as políticas abertas de `0002` por políticas reais e revoga todo acesso de
+`anon`. A chave publicável continua pública no bundle (é assim por design), mas sozinha ela não lê
+nenhuma tabela: é preciso estar logado **e** aprovado.
+
+- `lead`: dono ou gestor. `interacao` (as conversas): só de leads que a pessoa enxerga.
+- `import_lote`: de quem criou ou gestor. `profiles`: a própria linha (gestor vê todas).
+- `empresa`, `usina_aneel`, `concessionaria`, `backlog`, `supressao`: leitura para contas ativas;
+  escrita da base ANEEL/distribuidoras/backlog só do gestor.
+- **Dedup entre agentes** sem vazar leads alheios: as funções `checar_duplicados` e `cnpjs_com_lead`
+  respondem só "essa chave já existe" (e se é sua), nunca de quem é nem o conteúdo.
+- **Opt-out (LGPD)** vale para a carteira inteira: um gatilho no banco marca como descartado o lead
+  correspondente de **qualquer** agente quando uma supressão é registrada.
+
+Se algo der errado logo após a migration, o arquivo traz no fim um bloco **ROLLBACK** comentado que
+volta ao modelo aberto anterior (use só em emergência: ele reabre os dados para quem tem a chave).
 
 ## Segurança — o que já está feito e o que fica com quem hospeda
 
@@ -305,7 +403,7 @@ ignorado — o Chrome avisa isso no console de propósito).
 
 `vercel.json` já está no repo com os headers acima, `Cache-Control:
 no-cache` no `sw.js`/`index.html` (evita demora pra pegar atualização do
-service worker) e cache longo/imutável pros ícones. Rotas usam `#/fila` etc.
+service worker) e cache longo/imutável pros ícones. () => b
 (hash, não path) — como o fragmento nunca vai pro servidor, **não precisa de
 rewrite de SPA**, qualquer host estático serve isto sem configuração especial
 de roteamento.
@@ -340,14 +438,18 @@ QR code do WhatsApp pessoal do agente.
 ## Estrutura do repo
 
 ```
-lex-prospecta/
+wattscout/
 ├─ index.html                      # shell da página — inclui a CSP e o <script> do vendor
 ├─ manifest.webmanifest             # PWA
 ├─ sw.js                           # service worker "Nível 0" — hand-rolled, sem build step
 ├─ vercel.json                      # headers de segurança + cache para deploy real
 ├─ .vercelignore                    # exclusões extras só pra `vercel deploy` direto do disco
 ├─ package.json                     # só pra `npm test` — zero dependência de runtime
-├─ css/app.css
+├─ css/wattscout.css                 # sistema visual (casca, componentes) sobre os tokens do Garden
+├─ vendor/zendesk-garden/          # tokens de cor do Zendesk Garden (Apache-2.0) + LICENSE e NOTICE
+├─ scripts/dev.mjs                 # servidor de desenvolvimento (pnpm dev)
+├─ mcp/                            # servidor MCP da base de CNPJ da Receita (pacote separado; ver mcp/README.md)
+├─ .mcp.json                       # registra o servidor wattscout-cnpj no Claude Code
 ├─ vendor/
 │  └─ supabase-js-2.112.3.umd.js    # supabase-js vendorado — mantém CSP script-src 'self'
 ├─ js/
@@ -367,11 +469,15 @@ lex-prospecta/
 ├─ etl/amostras/                    # ZIP/CSV reais da ANEEL, para testar sem baixar 110 MB
 ├─ test/                            # node --test — cobre util/parse/aneel contra dado real
 ├─ supabase/
-│  ├─ migrations/0001_init.sql      # schema base — RLS com auth.uid()/is_gestor(), pronta pra fase 2
-│  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta pra rodar sem Entra ID (fase 1, atual)
+│  ├─ migrations/0001_init.sql      # schema base (as políticas daqui foram substituídas por 0006)
+│  ├─ migrations/0002_fase1_dados_compartilhados.sql   # RLS aberta (fase 1) — substituída por 0006
 │  ├─ migrations/0003_colunas_faltantes.sql            # colunas de empresa que 0001 não previu
 │  ├─ migrations/0004_lead_razao_social.sql            # idem, pra lead
 │  ├─ migrations/0005_backlog.sql                      # tabela backlog (consumo por distribuidora sem usina)
+│  ├─ migrations/0006_auth_rls.sql                     # login (Supabase Auth) + RLS por usuário + gestão de contas
+│  ├─ migrations/0007_recasar_distribuidoras.sql       # reassociar distribuidoras das usinas + índices GIN
+│  ├─ migrations/0008_empresa_cnpj_aberto.sql          # colunas da Base CNPJ em empresa
+│  ├─ tests/rls_teste.sql            # prova o isolamento (monta usuários de mentira, termina em ROLLBACK)
 │  └─ seed.sql                       # concessionárias + carga inicial do backlog
 └─ doc/LIA-legitimo-interesse.md
 ```

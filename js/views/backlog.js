@@ -13,8 +13,9 @@
 
 import { h, fmtNum, fmtData, limpar } from '../util.js';
 import {
-  todos, contar, backlogTodos, semearBacklog, salvarBacklog,
+  todos, contar, backlogTodos, semearBacklog, salvarBacklog, buscarLeads,
 } from '../db.js';
+import { reassociarDistribuidoras } from '../reassociar.js';
 import { cabecalhoPagina, card, kpi, vazio, toast, perguntar, navegar } from '../ui.js';
 
 /** kWh/mês vindo do formulário: aceita "1.734.765", "1680000" ou "1.680.000,00".
@@ -36,8 +37,16 @@ export async function viewBacklog(params, ctxApp) {
     try { await semearBacklog(); } catch { /* segue vazio */ }
   }
 
-  const [linhas, concessionarias] = await Promise.all([backlogTodos(), todos('concessionaria')]);
+  // leads por distribuidora (o RLS já limita: agente conta os dele, gestor conta todos)
+  const [linhas, concessionarias, leads] = await Promise.all([backlogTodos(), todos('concessionaria'), buscarLeads({})]);
   const nomeConc = new Map(concessionarias.map((c) => [c.codigo, c.nome]));
+  const leadsPorConc = new Map();
+  for (const l of leads) if (l.concessionaria_codigo) leadsPorConc.set(l.concessionaria_codigo, (leadsPorConc.get(l.concessionaria_codigo) || 0) + 1);
+
+  // Links de verdade (href), não só onclick: abrem em nova aba, funcionam com o botão do meio e não
+  // dependem de handler de clique. Os filtros viajam na URL e as telas de destino os aplicam e exibem.
+  const hrefUsinas = (codigo) => `#/descobrir?conc=${encodeURIComponent(codigo)}`;
+  const hrefLeads = (codigo) => `#/leads?conc=${encodeURIComponent(codigo)}&f=${ehGestor ? 'todos' : 'meus'}`;
 
   /* ── editar / adicionar ── */
   async function editar(reg, { novo = false } = {}) {
@@ -86,7 +95,7 @@ export async function viewBacklog(params, ctxApp) {
   /* ── estado vazio ── */
   if (!linhas.length) {
     raiz.append(
-      cabecalhoPagina('Backlog', 'Consumo por distribuidora ainda sem usina casada'),
+      cabecalhoPagina('Mercado › Backlog', 'Consumo por distribuidora ainda sem usina casada'),
       vazio(
         'Sem backlog cadastrado',
         ehGestor
@@ -127,15 +136,14 @@ export async function viewBacklog(params, ctxApp) {
   const maior = comLacuna[0];
 
   const linhaEl = (b) => h('div', { class: `bl-linha${b.valor > 0 ? '' : ' bl-linha--zero'}` },
-    h('span', { class: 'bl-linha__nome', title: `${b.nome} · ${b.concessionaria_codigo}` }, b.nome),
+    h('a', { class: 'bl-linha__nome link-lead', href: hrefUsinas(b.concessionaria_codigo), title: `Ver usinas de ${b.nome} (${b.concessionaria_codigo})` }, b.nome),
     h('div', { class: 'bl-linha__trilho' },
       h('div', { class: 'bl-linha__fill', style: `width:${Math.max(b.valor > 0 ? 2 : 0, (b.valor / maxV) * 100)}%` })),
     h('span', { class: 'bl-linha__val' }, `${fmtNum(b.valor)} kWh/mês`),
     h('div', { class: 'bl-linha__acoes' },
-      h('button', {
-        class: 'btn btn--mini',
-        onclick: () => navegar('descobrir', { conc: b.concessionaria_codigo }),
-      }, 'Ver usinas'),
+      h('a', { class: 'btn btn--mini', href: hrefUsinas(b.concessionaria_codigo), title: 'Empresas com usina nesta distribuidora (Prospecção)' }, 'Ver usinas'),
+      h('a', { class: 'btn btn--mini', href: hrefLeads(b.concessionaria_codigo), title: 'Leads já cadastrados nesta distribuidora' },
+        `Ver leads (${fmtNum(leadsPorConc.get(b.concessionaria_codigo) || 0)})`),
       ehGestor
         ? h('button', {
           class: 'btn btn--mini btn--fantasma', title: 'Editar backlog',
@@ -148,7 +156,14 @@ export async function viewBacklog(params, ctxApp) {
       'Backlog',
       'Consumo por distribuidora ainda sem usina casada — priorize a prospecção pela maior lacuna',
       ...(ehGestor
-        ? [h('button', { class: 'btn btn--fantasma', onclick: () => editar({}, { novo: true }) }, '+ Distribuidora')]
+        ? [
+          h('button', {
+            class: 'btn btn--fantasma',
+            title: 'Liga à distribuidora certa as usinas importadas antes de ela entrar no cadastro',
+            onclick: async () => { if (await reassociarDistribuidoras()) navegar('backlog'); },
+          }, 'Reassociar distribuidoras'),
+          h('button', { class: 'btn btn--fantasma', onclick: () => editar({}, { novo: true }) }, '+ Distribuidora'),
+        ]
         : []),
     ),
     h('div', { class: 'kpis' },
@@ -160,8 +175,10 @@ export async function viewBacklog(params, ctxApp) {
     card(null, h('div', { class: 'bl-lista' }, ordenado.map(linhaEl))),
     h('p', { class: 'texto-fraco' },
       'A compensação de GD exige usina e unidade consumidora na mesma distribuidora, '
-      + 'então o backlog é sempre por área de concessão. "Ver usinas" abre Descobrir '
-      + 'filtrado naquela distribuidora, ordenado por potência.'),
+      + 'então o backlog é sempre por área de concessão. "Ver usinas" abre a Prospecção '
+      + 'filtrada naquela distribuidora, ordenada por potência; "Ver leads" abre a lista de Leads '
+      + 'filtrada nela. Se "Ver usinas" vier vazio para uma distribuidora que deveria ter usinas, use '
+      + '"Reassociar distribuidoras" (gestor).'),
   ));
 
   return raiz;

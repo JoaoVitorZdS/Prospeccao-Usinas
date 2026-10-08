@@ -12,13 +12,14 @@ import {
 } from '../util.js';
 import { UFS, TIPOS_GERACAO } from '../seed.js';
 import {
-  todos, buscarTop, buscarLeads, criarLead, carregarSupressao, contar, agregarEmpresas,
+  todos, buscarTop, cnpjsComLead, criarLead, carregarSupressao, contar, agregarEmpresas,
 } from '../db.js';
 import {
   cabecalhoPagina, tabela, vazio, toast, kpi, badge, perguntar, confirmar, barraProgresso, card,
 } from '../ui.js';
 import { filaEnriquecimento, processarFila, taxaPreenchimento } from '../enriquecer.js';
-import { navegar } from '../ui.js';
+import { navegar, sincronizarHash } from '../ui.js';
+import { reassociarDistribuidoras } from '../reassociar.js';
 
 export async function viewDescobrir(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
@@ -28,7 +29,7 @@ export async function viewDescobrir(params, ctxApp) {
 
   if (!totalUsinas) {
     raiz.append(
-      cabecalhoPagina('Descobrir', 'Explorador sobre a base da ANEEL'),
+      cabecalhoPagina('Prospecção', 'Explorador sobre a base da ANEEL'),
       vazio(
         'Nenhuma usina carregada ainda',
         'Vá em Importar → Base da ANEEL: baixe pelo link direto e arraste o arquivo (o ZIP da GD '
@@ -56,7 +57,8 @@ export async function viewDescobrir(params, ctxApp) {
   const concessionarias = await todos('concessionaria');
   const mapaConc = new Map(concessionarias.map((c) => [c.codigo, c.nome]));
   const totalEmpresas = await contar('empresa');
-  const leadsAtivos = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
+  // CNPJs que já têm lead em QUALQUER carteira (o RLS esconde os leads dos colegas; a RPC devolve só o CNPJ)
+  const leadsAtivos = await cnpjsComLead();
   const supressao = await carregarSupressao();
 
   // uf/conc podem vir pré-selecionados pela URL (#/descobrir?conc=ENEL-SP) —
@@ -65,6 +67,8 @@ export async function viewDescobrir(params, ctxApp) {
     uf: params.uf || '', conc: params.conc || '', geracao: '', porte: '', modalidade: '', fase: '',
     potMin: '', potMax: '', conexaoDe: '', conexaoAte: '',
     comTelefone: false, comEmail: false, semLead: true, texto: '',
+    // a Base CNPJ traz empresas SEM usina; por padrão a lista segue sendo só quem tem usina (ANEEL)
+    soComUsina: params.sem_usina !== '1',
   };
   const selecao = new Set();
 
@@ -78,6 +82,13 @@ export async function viewDescobrir(params, ctxApp) {
      carregado: são refinamento fino, não a ferramenta de "achar o resto". */
   const opcUF = UFS.slice();
   const opcConc = concessionarias.map((c) => c.codigo).sort();
+  /** Tudo que pode estar em `empresa.distribuidoras` para esta distribuidora: o código e, para
+   *  empresas agregadas antes de ela entrar no cadastro, o nome/alias bruto. */
+  const valoresDaConc = (codigo) => {
+    const c = concessionarias.find((x) => x.codigo === codigo);
+    return [...new Set([codigo, c?.nome, ...(c?.aliases || [])].filter(Boolean))];
+  };
+  const nomeConcFiltro = () => mapaConc.get(filtro.conc) || filtro.conc;
   const opcGer = Object.keys(TIPOS_GERACAO);
   let opcPorte = [], opcModal = [], opcFase = [];
 
@@ -98,12 +109,13 @@ export async function viewDescobrir(params, ctxApp) {
   async function recarregar() {
     const filtroServidor = (q) => {
       if (filtro.uf) q = q.contains('ufs', [filtro.uf]);
-      if (filtro.conc) q = q.contains('distribuidoras', [filtro.conc]);
+      if (filtro.conc) q = q.overlaps('distribuidoras', valoresDaConc(filtro.conc));
+      if (filtro.soComUsina) q = q.gt('qtd_usinas', 0);
       return q;
     };
     const [carregadas, totalDoFiltro] = await Promise.all([
       buscarTop('empresa', { ordenarPor: 'potencia_total_kw', limite: TETO_CARGA, filtro: filtroServidor }),
-      (filtro.uf || filtro.conc) ? contar('empresa', filtroServidor) : Promise.resolve(totalEmpresas),
+      (filtro.uf || filtro.conc || filtro.soComUsina) ? contar('empresa', filtroServidor) : Promise.resolve(totalEmpresas),
     ]);
     empresas = carregadas;
     totalFiltrado = totalDoFiltro;
@@ -123,7 +135,7 @@ export async function viewDescobrir(params, ctxApp) {
       // uf/conc já vieram filtrados do servidor (recarregar) — os testes
       // abaixo são só uma rede de segurança, não fazem trabalho de verdade
       if (f.uf && !(e.ufs || []).includes(f.uf)) return false;
-      if (f.conc && !(e.distribuidoras || []).includes(f.conc)) return false;
+      if (f.conc && !valoresDaConc(f.conc).some((v) => (e.distribuidoras || []).includes(v))) return false;
       if (f.geracao && !(e.tipos_geracao || []).includes(f.geracao)) return false;
       if (f.porte && !(e.portes || []).includes(f.porte)) return false;
       if (f.modalidade && !(e.modalidades || []).includes(f.modalidade)) return false;
@@ -155,6 +167,7 @@ export async function viewDescobrir(params, ctxApp) {
     s.value = filtro[chave] ?? ''; // reflete o que veio da URL / do estado atual
     s.addEventListener('change', async () => {
       filtro[chave] = s.value;
+      if (remoto) sincronizarHash('descobrir', { uf: filtro.uf, conc: filtro.conc, sem_usina: filtro.soComUsina ? '' : '1' });
       if (remoto) {
         s.disabled = true;
         areaTabela.replaceChildren(h('div', { class: 'carregando' }, 'Buscando…'));
@@ -174,6 +187,18 @@ export async function viewDescobrir(params, ctxApp) {
     const i = h('input', { type: 'date', title: rot });
     i.addEventListener('change', () => { filtro[chave] = i.value; desenhar(); });
     return h('label', { class: 'campo campo--linha' }, h('span', { class: 'rot-mini' }, rot), i);
+  };
+  /** Filtro que muda a consulta ao servidor (não só refiltra o que já veio). */
+  const chkRemoto = (rot, chave, marcado) => {
+    const i = h('input', { type: 'checkbox', checked: marcado });
+    i.addEventListener('change', async () => {
+      filtro[chave] = i.checked;
+      sincronizarHash('descobrir', { uf: filtro.uf, conc: filtro.conc, sem_usina: filtro.soComUsina ? '' : '1' });
+      areaTabela.replaceChildren(h('div', { class: 'carregando' }, 'Buscando…'));
+      try { await recarregar(); } catch (e) { toast(e.message, 'erro', 6000); }
+      desenhar();
+    });
+    return h('label', { class: 'chk', title: 'Desmarque para ver também as empresas importadas da Base CNPJ que não têm usina na ANEEL' }, i, rot);
   };
   const chk = (rot, chave, marcado) => {
     const i = h('input', { type: 'checkbox', checked: marcado });
@@ -200,7 +225,34 @@ export async function viewDescobrir(params, ctxApp) {
       chk('Tem telefone', 'comTelefone', false),
       chk('Tem e-mail', 'comEmail', false),
       chk('Esconder quem já é lead', 'semLead', true),
+      chkRemoto('Só empresas com usina (ANEEL)', 'soComUsina', filtro.soComUsina),
       busca));
+
+  /** Mostra o que está filtrando no servidor (UF/distribuidora) — antes não havia sinal nenhum de que
+   *  o link do Backlog tinha sido aplicado, e uma lista vazia parecia "o botão não funcionou". */
+  const areaFiltroAtivo = h('div', {});
+  function desenharFiltroAtivo() {
+    const chips = [];
+    const limparRemoto = (chave) => navegar('descobrir', {
+      uf: chave === 'uf' ? '' : filtro.uf, conc: chave === 'conc' ? '' : filtro.conc, sem_usina: filtro.soComUsina ? '' : '1',
+    });
+    if (filtro.conc) {
+      chips.push(h('span', { class: 'chip' }, `Distribuidora: ${nomeConcFiltro()}`,
+        h('button', { class: 'chip-filtro__x', type: 'button', 'aria-label': 'Remover filtro de distribuidora', onclick: () => limparRemoto('conc') }, '×')));
+    }
+    if (filtro.uf) {
+      chips.push(h('span', { class: 'chip' }, `UF: ${filtro.uf}`,
+        h('button', { class: 'chip-filtro__x', type: 'button', 'aria-label': 'Remover filtro de UF', onclick: () => limparRemoto('uf') }, '×')));
+    }
+    areaFiltroAtivo.replaceChildren(...limpar(chips.length
+      ? h('div', { class: 'linha-botoes' },
+        h('span', { class: 'texto-fraco' }, 'Filtrando por:'), ...chips,
+        params.conc ? h('a', { class: 'btn btn--mini btn--fantasma', href: '#/backlog' }, '← Voltar ao Mercado') : null,
+        filtro.conc
+          ? h('a', { class: 'btn btn--mini btn--fantasma', href: `#/leads?conc=${encodeURIComponent(filtro.conc)}&f=${ehGestor ? 'todos' : 'meus'}` }, 'Ver os leads desta distribuidora')
+          : null)
+      : null));
+  }
 
   const areaKpis = h('div', { class: 'kpis' });
   const areaAcoes = h('div', { class: 'barra-selecao', hidden: true });
@@ -213,7 +265,7 @@ export async function viewDescobrir(params, ctxApp) {
         h('strong', {}, e.razao_social || '(sem nome)'),
         h('span', {}, maskCnpj(e.cnpj))),
     },
-    { titulo: 'Usinas', largura: '70px', alinha: 'dir', render: (e) => fmtNum(e.qtd_usinas) },
+    { titulo: 'Usinas', largura: '90px', alinha: 'dir', render: (e) => (e.qtd_usinas ? fmtNum(e.qtd_usinas) : badge('sem usina', 'cinza')) },
     {
       titulo: 'Potência total',
       largura: '120px',
@@ -279,7 +331,7 @@ export async function viewDescobrir(params, ctxApp) {
     }
 
     const sup = await carregarSupressao();
-    const jaLead = new Set((await buscarLeads({})).map((l) => l.cnpj).filter(Boolean));
+    const jaLead = await cnpjsComLead();
     let criados = 0, pulados = 0, suprimidos = 0;
 
     for (let i = 0; i < escolhidos.length; i++) {
@@ -287,22 +339,31 @@ export async function viewDescobrir(params, ctxApp) {
       if (jaLead.has(e.cnpj)) { pulados++; continue; }
       if (sup.testar({ cnpj: e.cnpj, telefone: e.telefone1, email: e.email })) { suprimidos++; continue; }
       const owner = distribuir ? rodizio[criados % rodizio.length].id : destino;
-      await criarLead({
-        cnpj: e.cnpj,
-        razao_social: e.razao_social,
-        origem: 'aneel',
-        origem_detalhe: `Descobrir · ${e.qtd_usinas} usina(s) · ${fmtPotencia(e.potencia_total_kw)}`,
-        telefone: e.telefone1 || null,
-        telefone2: e.telefone2 || null,
-        email: e.email || null,
-        owner_id: owner,
-        concessionaria_codigo: (e.distribuidoras || [])[0] || null,
-        potencia_kwp: e.potencia_total_kw ?? null,
-        cep: e.cep || null,
-        cidade: e.municipio_principal || null,
-        uf: e.uf_principal || null,
-        proxima_acao_em: hojeISO(),
-      });
+      // distribuidora: só vira código se existir no cadastro (FK); senão guarda o texto bruto
+      const primeiraConc = (e.distribuidoras || [])[0] || null;
+      try {
+        await criarLead({
+          cnpj: e.cnpj,
+          razao_social: e.razao_social,
+          origem: 'aneel',
+          origem_detalhe: `Descobrir · ${e.qtd_usinas} usina(s) · ${fmtPotencia(e.potencia_total_kw)}`,
+          telefone: e.telefone1 || null,
+          telefone2: e.telefone2 || null,
+          email: e.email || null,
+          owner_id: owner,
+          concessionaria_codigo: primeiraConc && mapaConc.has(primeiraConc) ? primeiraConc : null,
+          concessionaria_raw: primeiraConc && !mapaConc.has(primeiraConc) ? primeiraConc : null,
+          potencia_kwp: e.potencia_total_kw ?? null,
+          cep: e.cep || null,
+          cidade: e.municipio_principal || null,
+          uf: e.uf_principal || null,
+          proxima_acao_em: hojeISO(),
+        });
+      } catch (err) {
+        // 23505 = alguém criou lead para esse CNPJ no meio do caminho (índice único): não é erro, é duplicado
+        if (err.codigo === '23505') { pulados++; jaLead.add(e.cnpj); continue; }
+        throw err;
+      }
       jaLead.add(e.cnpj);
       leadsAtivos.add(e.cnpj);
       criados++;
@@ -344,7 +405,28 @@ export async function viewDescobrir(params, ctxApp) {
     desenhar();
   }
 
+  /** Lista vazia: diz POR QUÊ, em vez de um genérico "nenhuma empresa". */
+  function mensagemVazia() {
+    if (filtro.conc && !totalFiltrado) {
+      return vazio(`Nenhuma empresa associada a ${nomeConcFiltro()}`,
+        'A base não tem empresa ligada a esta distribuidora. Se você já importou a base da ANEEL, as usinas podem '
+        + 'ter ficado sem a distribuidora ligada ao cadastro (acontece quando a distribuidora entrou no cadastro '
+        + 'depois da importação) — reassociar resolve. Se é uma área ainda sem usinas importadas, importe o recorte dela em Importar.',
+        h('div', { class: 'linha-botoes' },
+          ehGestor
+            ? h('button', { class: 'btn btn--primario', onclick: async () => { if (await reassociarDistribuidoras()) navegar('descobrir', { uf: filtro.uf, conc: filtro.conc }); } }, 'Reassociar distribuidoras')
+            : h('span', { class: 'texto-fraco' }, 'Peça a um gestor para reassociar as distribuidoras.'),
+          h('a', { class: 'btn', href: '#/importar?modo=aneel' }, 'Importar base da ANEEL')));
+    }
+    if (filtro.semLead && empresas.length) {
+      return vazio('Todas as empresas deste recorte já são leads',
+        'Nada novo para prospectar aqui — elas já estão em alguma carteira. Desmarque "Esconder quem já é lead" para vê-las.');
+    }
+    return vazio('Nenhuma empresa neste filtro', 'Afrouxe os filtros ou importe mais um recorte da ANEEL.');
+  }
+
   function desenhar() {
+    desenharFiltroAtivo();
     const lista = aplicar();
     const potTotal = lista.reduce((s, e) => s + (e.potencia_total_kw || 0), 0);
     const usinas = lista.reduce((s, e) => s + (e.qtd_usinas || 0), 0);
@@ -392,14 +474,14 @@ export async function viewDescobrir(params, ctxApp) {
               onclick: () => enriquecer(lista.filter((e) => !e.enriquecido_em).slice(0, 200).map((e) => e.cnpj)),
               disabled: naoEnriq === 0,
             }, `Enriquecer ${Math.min(naoEnriq, 200)} pendentes`)))
-        : vazio('Nenhuma empresa neste filtro', 'Afrouxe os filtros ou importe mais um recorte da ANEEL.'),
+        : mensagemVazia(),
     ));
     atualizarAcoes(lista);
   }
 
   const taxa = await taxaPreenchimento();
   raiz.append(...limpar(
-    cabecalhoPagina('Descobrir',
+    cabecalhoPagina('Prospecção',
       `${fmtNum(totalUsinas)} usinas · ${fmtNum(totalEmpresas)} CNPJs distintos na base`,
       h('button', {
         class: 'btn btn--fantasma',
@@ -408,7 +490,15 @@ export async function viewDescobrir(params, ctxApp) {
           toast(`${fmtNum(n)} empresas reagregadas a partir das usinas.`, 'ok');
           navegar('descobrir');
         },
-      }, 'Reagregar')),
+      }, 'Reagregar'),
+      ehGestor
+        ? h('button', {
+          class: 'btn btn--fantasma',
+          title: 'Liga à distribuidora certa as usinas importadas antes de ela entrar no cadastro',
+          onclick: async () => { if (await reassociarDistribuidoras()) navegar('descobrir', { uf: filtro.uf, conc: filtro.conc }); },
+        }, 'Reassociar distribuidoras')
+        : null),
+    areaFiltroAtivo,
     taxa.enriquecidas
       ? h('p', { class: 'nota-taxa' },
         `Taxa de preenchimento medida: telefone em ${Math.round(taxa.pctTelefone * 100)}% e e-mail em `

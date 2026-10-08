@@ -1,10 +1,9 @@
 // supabase-config.example.js — copie para supabase-config.js e preencha.
 //
-// supabase-config.js é ignorado pelo git (.gitignore) — não porque a chave seja
-// secreta (a publishable key é pública por design, vai no bundle do navegador
-// de qualquer forma), mas porque cada ambiente (seu projeto de teste, o
-// projeto de produção da equipe) aponta pra um Supabase diferente, e isso não
-// deveria estar commitado como se fosse um valor fixo do código.
+// Neste repo o supabase-config.js É commitado (o deploy via GitHub precisa dele — ver SETUP.md).
+// A publishable key é pública por design: vai no bundle do navegador de qualquer forma e, sozinha,
+// não lê nenhuma tabela (o RLS exige login). Use este exemplo como modelo para apontar outro
+// projeto Supabase (um de teste, por exemplo).
 //
 // Onde achar: painel do Supabase → Project Settings → API.
 //   SUPABASE_URL  = "Project URL"

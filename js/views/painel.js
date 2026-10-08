@@ -39,7 +39,7 @@ export async function viewPainel(params, ctxApp) {
 
   if (!leads.length) {
     raiz.append(
-      cabecalhoPagina('Painel', ehGestor ? 'Todos os agentes' : perfil.nome),
+      cabecalhoPagina('Relatórios', ehGestor ? 'Todos os agentes' : perfil.nome),
       vazio('Sem leads ainda', 'Importe a planilha atual ou puxe leads em Descobrir.'));
     return raiz;
   }
@@ -79,8 +79,8 @@ export async function viewPainel(params, ctxApp) {
       atrasados.length ? 'próxima ação já venceu' : 'nenhum atraso'),
     kpi('Contatos na semana', fmtNum(interSemana.length),
       `${tocadosSemana.size} lead(s) distintos`),
-    kpi('Taxa de ganho', `${(taxaGanho * 100).toFixed(1)}%`,
-      `${(taxaGeral * 100).toFixed(1)}% sobre a base toda`));
+    kpi('Taxa de ganho', `${fmtNum(taxaGanho * 100, 1)}%`,
+      `${fmtNum(taxaGeral * 100, 1)}% sobre a base toda`));
 
   /* ── Funil ── */
   const porStatus = STATUS.map((s) => ({
@@ -167,7 +167,7 @@ export async function viewPainel(params, ctxApp) {
   const taxa = await taxaPreenchimento();
 
   raiz.append(...limpar(
-    cabecalhoPagina('Painel',
+    cabecalhoPagina('Relatórios',
       ehGestor ? `Todos os agentes · ${fmtNum(leads.length)} leads` : `${perfil.nome} · sua carteira`),
     kpis,
     h('div', { class: 'grade-2 grade-2--larga' },

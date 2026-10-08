@@ -1,4 +1,4 @@
--- 0001_init.sql — schema de referência do Lex Prospecta (seção 5 do plano).
+-- 0001_init.sql — schema de referência do WattScout (antes Lex Prospecta) (seção 5 do plano).
 --
 -- Esta versão do app É AUTOCONTIDA e roda sobre IndexedDB no navegador (js/db.js),
 -- não sobre este arquivo. Este DDL fica no repo por dois motivos:

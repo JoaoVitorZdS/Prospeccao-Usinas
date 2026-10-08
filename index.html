@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Lex Prospecta</title>
-<meta name="description" content="PWA autônomo de prospecção de usinas de geração distribuída e intermediadores.">
-<meta name="theme-color" content="#0e1b2e">
+<title>WattScout</title>
+<meta name="description" content="WattScout — CRM de prospecção do setor de energia: usinas de geração distribuída, distribuidoras e intermediadores.">
+<meta name="theme-color" content="#063940">
 <meta name="color-scheme" content="light dark">
 
 <!-- CSP como <meta> porque o app é servido como arquivo estático puro (sem
@@ -37,22 +37,23 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Prospecta">
+<meta name="apple-mobile-web-app-title" content="WattScout">
 <meta name="mobile-web-app-capable" content="yes">
 
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="vendor/zendesk-garden/css-variables.css">
+<link rel="stylesheet" href="css/wattscout.css">
 </head>
 <body>
-<!-- O cabeçalho (.topo) e as rotas (#conteudo) são montados por js/app.js.
+<!-- A barra lateral (.rail), a barra superior (.topo) e as rotas (#conteudo) são montadas por js/app.js.
      Ver SETUP.md para como rodar localmente — precisa de servidor HTTP, não file://. -->
 <main id="conteudo" aria-live="polite" aria-busy="true">
-  <div class="carregando">Carregando Lex Prospecta…</div>
+  <div class="carregando">Carregando WattScout…</div>
 </main>
 
 <noscript>
   <div class="erro-fatal">
     <h1>JavaScript necessário</h1>
-    <p>O Lex Prospecta é um app de página única e precisa de JavaScript habilitado.</p>
+    <p>O WattScout é um app de página única e precisa de JavaScript habilitado.</p>
   </div>
 </noscript>
 

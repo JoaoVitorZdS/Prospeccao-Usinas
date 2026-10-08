@@ -1,7 +1,7 @@
 # Relatório de Impacto à Proteção de Dados — Legítimo Interesse
-### Prospecção comercial B2B de usinas de geração distribuída (Lex Prospecta)
+### Prospecção comercial B2B de usinas de geração distribuída (WattScout)
 
-**Versão 1.0 · elaborado junto com o lançamento do Lex Prospecta.**
+**Versão 1.1 · elaborado junto com o lançamento do WattScout (antes chamado Lex Prospecta); revisado para incluir a Base CNPJ (seção 2-A).**
 **Responsável pela atividade:** equipe comercial de usinas — Alexandria.
 **Base legal invocada:** art. 7º, IX, da LGPD (legítimo interesse do controlador).
 
@@ -26,11 +26,47 @@ esse ponto não é ambíguo na LGPD e o tratamento reconhece isso desde o desenh
 | OpenCNPJ / BrasilAPI | Espelho de dados públicos do CNPJ (Receita Federal) | Cadastro público de pessoa jurídica |
 | Planilha legada da equipe | Contato já trabalhado anteriormente | Continuidade de relação comercial já iniciada |
 | Colagem/import manual de sites de CNPJ | Dado público de cadastro empresarial | Consulta pontual, feita por humano, em velocidade humana |
+| Base CNPJ — dados abertos da Receita Federal (servidor MCP local, seção 2-A) | Dado aberto oficial, publicação mensal | Cadastro público de pessoa jurídica; sem PF, sem raspagem |
 
 **O que este sistema não faz**: não cruza a base para reidentificar titulares
 pessoa física — a ANEEL já mascara CPF/nome de PF nesse dataset, e o app usa
 exclusivamente o recorte PJ (aberto). Reidentificar sairia de "dado público" e
 entraria em tratamento de alto risco, fora do escopo desta atividade.
+
+## 2-A. Fonte adicional — Base CNPJ (dados abertos da Receita Federal)
+
+Esta revisão registra uma nova fonte, como exige a seção 5: o cadastro de CNPJ que a Receita
+Federal publica todo mês como **dado aberto** (arquivos Empresas, Estabelecimentos e Sócios), o mesmo
+conjunto que serviços como o Casa dos Dados exibem. O WattScout o lê **direto da fonte oficial**
+(compartilhamento público da Receita), sem raspar o Casa dos Dados nem outros sites — o que seria
+descumprir os termos deles — e sem enviar dado a terceiros.
+
+**Como é usado.** Um servidor MCP local (`mcp/`) carrega a base **já filtrada na leitura** (apenas
+empresas ativas de CNAEs de energia, nas UFs escolhidas, ou apenas uma lista de CNPJs) num SQLite no
+computador de quem opera; o Claude consulta esse arquivo e exporta um CSV que é importado em
+*Importar → Base CNPJ*. A base completa (dezenas de milhões de registros) **nunca** é carregada.
+
+**Salvaguardas específicas desta fonte:**
+- **Pessoa física fora por padrão.** Empresário individual e MEI (natureza jurídica 2135) têm a razão
+  social composta pelo nome da pessoa e parte do CPF: são removidos já na carga do SQLite e de novo
+  na importação (opção explícita, desligada, para incluí-los). Mantém-se a regra da seção 2: não se
+  reidentifica pessoa física.
+- **Sócios: só o necessário.** Guarda-se nome, qualificação, data de entrada e faixa etária; o
+  documento (CPF/CNPJ mascarado) **não é gravado** nem exportado. A coluna Sócios é opcional na
+  exportação (desligada por padrão).
+- **Opt-out vale também aqui.** A importação consulta a lista de supressão por CNPJ, telefone e
+  e-mail antes de gravar: CNPJ suprimido não entra; contato suprimido é descartado.
+- **Procedência registrada.** Cada empresa importada leva `fonte_cadastro` e `competencia_cadastro`
+  (mês da base da Receita), e o lote fica na tela Listas.
+- **Dado em repouso.** O SQLite fica em `mcp/dados/`, fora do controle de versão e do deploy; os
+  CSVs exportados ficam em `mcp/dados/exportacoes/`. Não devem ser enviados por e-mail nem
+  compartilhados fora da equipe de prospecção.
+- **Finalidade preservada.** Prospecção B2B de empresas do setor de energia, para oferta ligada à
+  atividade profissional delas — a mesma da seção 1.
+
+**Limite conhecido.** Telefone e e-mail do cadastro da Receita são, em muitas empresas, de contador ou
+pessoais do sócio. O teste de balanceamento da seção 3 continua valendo, e o opt-out é o remédio.
+Convém o DPO validar este uso antes de operar em volume.
 
 ## 3. Teste de balanceamento (legitimate interest assessment)
 
@@ -79,6 +115,6 @@ tratamento de dado de PF).
 ---
 
 *Este é um documento de referência elaborado como parte do plano de produto do
-Lex Prospecta. Não substitui orientação jurídica formal — antes de operar em
+WattScout. Não substitui orientação jurídica formal — antes de operar em
 produção com dado pessoal real, submeta à revisão do time jurídico/DPO da
 organização.*
