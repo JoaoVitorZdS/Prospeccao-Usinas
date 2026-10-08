@@ -10,7 +10,12 @@ import { abrir, semearConcessionarias, perfilAtual, getConfig, setConfig, contar
 import { sessaoAtual, sair, aoSair, erroNaUrl, emRecuperacao, limparUrlAuth } from './auth.js';
 import { registrarRota, aliasRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
   icone, avatar, menuSuspenso, vazio } from './ui.js';
+import { criarLeadManual } from './leads-acoes.js';
+import { perfis as listarPerfis } from './db.js';
 import { telaLogin, telaPendente, telaNovaSenha } from './views/login.js';
+import { viewInicio } from './views/inicio.js';
+import { viewNegocios } from './views/negocios.js';
+import { viewTarefas } from './views/tarefas.js';
 import { viewLeads } from './views/leads.js';
 import { viewLead } from './views/lead.js';
 import { viewListas } from './views/listas.js';
@@ -28,9 +33,12 @@ import { viewContas } from './views/contas.js';
 // só tiveram o rótulo trocado; a renomeação de cada rota acontece junto com a tela refeita
 // (#/fila já virou #/leads e continua funcionando por alias).
 const NAV_TOPO = [
+  { rota: 'inicio', label: 'Início', icone: 'inicio' },
   { rota: 'leads', label: 'Leads', icone: 'leads' },
-  { rota: 'listas', label: 'Listas', icone: 'listas' },
+  { rota: 'negocios', label: 'Negócios', icone: 'negocios' },
+  { rota: 'tarefas', label: 'Tarefas', icone: 'tarefas' },
   { rota: 'conversas', label: 'Comunicações', icone: 'conversas' },
+  { rota: 'listas', label: 'Listas', icone: 'listas' },
   { rota: 'descobrir', label: 'Prospecção', icone: 'prospeccao' },
   { rota: 'backlog', label: 'Mercado', icone: 'mercado' },
   { rota: 'painel', label: 'Relatórios', icone: 'relatorios' },
@@ -39,7 +47,7 @@ const NAV_TOPO = [
 ];
 const NAV_BASE = [
   { rota: 'contas', label: 'Contas', icone: 'usuario', soGestor: true },
-  { rota: 'config', label: 'Admin', icone: 'admin' },
+  { rota: 'config', label: 'Admin Center', icone: 'admin' },
 ];
 
 const ctxApp = { perfil: null, ehGestor: false, recarregarApp: null };
@@ -59,10 +67,10 @@ function montarShell() {
   const badgeFila = h('span', { class: 'rail__contador', id: 'contador-fila', hidden: true });
 
   const rail = h('nav', { class: 'rail', 'aria-label': 'Navegação principal' },
-    h('a', { class: 'rail__marca', href: '#/leads', 'aria-label': 'WattScout — início', title: 'WattScout' },
+    h('a', { class: 'rail__marca', href: '#/inicio', 'aria-label': 'WattScout — início', title: 'WattScout' },
       h('img', { src: 'icons/icon-192.png', alt: '', width: '32', height: '32' })),
     h('div', { class: 'rail__itens' },
-      NAV_TOPO.map((n) => itemRail(n, n.rota === 'leads' ? badgeFila : null))),
+      NAV_TOPO.map((n) => itemRail(n, n.rota === 'tarefas' ? badgeFila : null))),
     h('div', { class: 'rail__base' },
       NAV_BASE.filter((n) => !n.soGestor || ctxApp.ehGestor).map((n) => itemRail(n))));
 
@@ -83,7 +91,17 @@ function montarShell() {
   const botaoNovo = h('button', { class: 'btn btn--primario btn--mini', type: 'button' },
     icone('mais', { tamanho: 'peq' }), 'Novo');
   const menuNovo = menuSuspenso(botaoNovo, [
+    {
+      rotulo: 'Novo lead', icone: 'leads',
+      onclick: async () => {
+        try {
+          const novo = await criarLeadManual({ perfil: ctxApp.perfil, ehGestor: ctxApp.ehGestor, perfis: await listarPerfis() });
+          if (novo) navegar(`lead/${novo.id}`);
+        } catch (e) { toast(e.message, 'erro', 7000); }
+      },
+    },
     { rotulo: 'Importar planilha', icone: 'importar', onclick: () => navegar('importar') },
+    { rotulo: 'Importar Base CNPJ', icone: 'importar', onclick: () => navegar('importar', { modo: 'cnpj' }) },
     { rotulo: 'Prospectar usinas', icone: 'prospeccao', onclick: () => navegar('descobrir') },
   ]);
 
@@ -118,7 +136,7 @@ async function atualizarChip() {
     },
     { rotulo: 'Meu perfil', icone: 'usuario', onclick: () => navegar('perfil') },
     ctxApp.ehGestor ? { rotulo: 'Gestão de contas', icone: 'leads', onclick: () => navegar('contas') } : null,
-    { rotulo: 'Configurações', icone: 'admin', onclick: () => navegar('config') },
+    { rotulo: 'Admin Center', icone: 'admin', onclick: () => navegar('config') },
     { sep: true },
     { rotulo: 'Sair', icone: 'sair', perigo: true, onclick: async () => { await sair(); location.reload(); } },
   ]);
@@ -298,7 +316,10 @@ async function boot() {
     ? fn(params, ctx)
     : vazio('Acesso restrito', 'Esta área é só para gestores.')));
 
+  registrarRota('inicio', comCtx(viewInicio));
   registrarRota('leads', comCtx(viewLeads));
+  registrarRota('negocios', comCtx(viewNegocios));
+  registrarRota('tarefas', comCtx(viewTarefas));
   registrarRota('lead', comCtx(viewLead));
   registrarRota('listas', comCtx(viewListas));
   aliasRota('fila', 'leads');

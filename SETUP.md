@@ -128,10 +128,7 @@ manter esse hábito ao estender o importador.
    o app descompacta e filtra PJ **em streaming**, sem nunca montar o CSV inteiro
    (~1 GB descomprimido) na memória; só usinas PJ (a imensa maioria é PF e é
    descartada no caminho). O CSV do SIGA baixa pronto, sem precisar de ZIP.
-4. Em **Descobrir**, filtre e clique em "Criar leads". Em **Minha fila**, comece
-   a abordar pelo cockpit. Em **Conversas**, acompanhe quem está esperando
-   resposta — é a mesma base de toques, só que organizada como caixa de entrada
-   em vez de lista de tarefas.
+() => b
 
 ## Enriquecimento de contato (OpenCNPJ)
 
@@ -406,7 +403,7 @@ ignorado — o Chrome avisa isso no console de propósito).
 
 `vercel.json` já está no repo com os headers acima, `Cache-Control:
 no-cache` no `sw.js`/`index.html` (evita demora pra pegar atualização do
-service worker) e cache longo/imutável pros ícones. Rotas usam `#/fila` etc.
+service worker) e cache longo/imutável pros ícones. () => b
 (hash, não path) — como o fragmento nunca vai pro servidor, **não precisa de
 rewrite de SPA**, qualquer host estático serve isto sem configuração especial
 de roteamento.

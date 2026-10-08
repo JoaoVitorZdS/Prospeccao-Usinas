@@ -407,9 +407,24 @@ export function menuSuspenso(botao, itens, { alinhar = 'dir' } = {}) {
     botao.setAttribute('aria-expanded', 'false');
     document.removeEventListener('mousedown', foraClique, true);
     document.removeEventListener('keydown', teclaEsc, true);
+    window.removeEventListener('scroll', aoRolar, true);
+    window.removeEventListener('resize', fechar);
   };
   const foraClique = (e) => { if (!ancora.contains(e.target)) fechar(); };
   const teclaEsc = (e) => { if (e.key === 'Escape') { fechar(); botao.focus(); } };
+  // rolar o próprio menu (lista longa) não pode fechá-lo; rolar a página por baixo, sim
+  const aoRolar = (e) => { if (!aberto?.contains(e.target)) fechar(); };
+  /** `position: fixed` a partir do botão: colunas e tabelas com `overflow` não cortam o menu. */
+  const posicionar = () => {
+    const b = botao.getBoundingClientRect();
+    const m = aberto.getBoundingClientRect();
+    const folga = 8;
+    let topo = b.bottom + 6;
+    if (topo + m.height > innerHeight - folga) topo = Math.max(folga, b.top - 6 - m.height);
+    let esq = alinhar === 'esq' ? b.left : b.right - m.width;
+    esq = Math.min(Math.max(folga, esq), innerWidth - m.width - folga);
+    Object.assign(aberto.style, { position: 'fixed', top: `${topo}px`, left: `${esq}px`, right: 'auto' });
+  };
   const abrir = () => {
     aberto = h('div', { class: `menu${alinhar === 'esq' ? ' menu--esq' : ''}`, role: 'menu' },
       itens.filter(Boolean).map((it) => {
@@ -425,10 +440,13 @@ export function menuSuspenso(botao, itens, { alinhar = 'dir' } = {}) {
         }, it.icone ? icone(it.icone, { tamanho: 'peq' }) : null, it.rotulo);
       }));
     ancora.append(aberto);
+    posicionar();
     botao.setAttribute('aria-expanded', 'true');
     document.addEventListener('mousedown', foraClique, true);
     document.addEventListener('keydown', teclaEsc, true);
-    aberto.querySelector('.menu__item')?.focus();
+    aberto.querySelector('.menu__item')?.focus({ preventScroll: true });
+    window.addEventListener('scroll', aoRolar, true);
+    window.addEventListener('resize', fechar);
   };
   botao.setAttribute('aria-haspopup', 'menu');
   botao.setAttribute('aria-expanded', 'false');
@@ -537,12 +555,12 @@ export function sincronizarHash(nome, params) {
 }
 
 export async function renderRota() {
-  const bruto = location.hash.replace(/^#\/?/, '') || 'leads';
+  const bruto = location.hash.replace(/^#\/?/, '') || 'inicio';
   const [caminho, qs] = bruto.split('?');
   // "lead/abc-123" → rota "lead", com o resto do caminho em params._resto
   const [primeiro, ...restoCaminho] = caminho.split('/');
   const nome = aliases.get(primeiro) || primeiro;
-  const render = rotas.get(nome) || rotas.get('leads');
+  const render = rotas.get(nome) || rotas.get('inicio');
   const alvo = $('#conteudo');
   rotaAtual = nome;
   document.querySelectorAll('.rail__item').forEach((a) =>

@@ -79,8 +79,8 @@ export async function viewPainel(params, ctxApp) {
       atrasados.length ? 'próxima ação já venceu' : 'nenhum atraso'),
     kpi('Contatos na semana', fmtNum(interSemana.length),
       `${tocadosSemana.size} lead(s) distintos`),
-    kpi('Taxa de ganho', `${(taxaGanho * 100).toFixed(1)}%`,
-      `${(taxaGeral * 100).toFixed(1)}% sobre a base toda`));
+    kpi('Taxa de ganho', `${fmtNum(taxaGanho * 100, 1)}%`,
+      `${fmtNum(taxaGeral * 100, 1)}% sobre a base toda`));
 
   /* ── Funil ── */
   const porStatus = STATUS.map((s) => ({

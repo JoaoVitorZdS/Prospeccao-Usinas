@@ -115,6 +115,26 @@ export async function mudarStatusLeads(leads, { perfil }) {
   return n;
 }
 
+/**
+ * Mover um lead de etapa no quadro de Negócios (arrastar ou menu). Perder/descartar pede o motivo, como em
+ * qualquer outro lugar; as demais etapas movem direto e deixam uma anotação no histórico.
+ */
+export async function moverParaEtapa(lead, destino, { perfil }) {
+  if (!lead || lead.status === destino) return 0;
+  let dados = { status: destino, motivo: null, obs: '' };
+  if (['perdido', 'descartado'].includes(destino)) {
+    dados = await dialogoStatus({
+      titulo: `Mover para ${statusLabel(destino)}`,
+      estados: [{ v: destino, label: statusLabel(destino) }], inicial: destino, ok: 'Mover',
+      aviso: `${lead.razao_social || lead.contato_nome || 'O lead'} sai da fila de trabalho.`,
+    });
+    if (!dados) return 0;
+  }
+  const n = await aplicarStatus([lead], dados, perfil, 'Movido no quadro');
+  toast(`${lead.razao_social || lead.contato_nome || 'Lead'} → ${statusLabel(destino)}.`, 'ok', 2500);
+  return n;
+}
+
 /* ═══════════════ Devolver à base, restaurar, excluir ═══════════════ */
 
 const MOTIVOS_DEVOLUCAO = [

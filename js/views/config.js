@@ -1,4 +1,4 @@
-// views/config.js — configuração e operação (seção 7.G).
+// views/config.js — Admin Center: configuração e operação, com menu lateral por seção.
 
 import {
   h, fmtNum, fmtData, fmtDataHora, maskCnpj, maskFone, baixar, nomeArquivo, hojeISO,
@@ -313,22 +313,37 @@ export async function viewConfig(params, ctxApp) {
         'Nem WhatsApp, nem e-mail em massa — decisão de produto, não limitação. Protege o número '
         + 'oficial de atendimento e reduz a exposição de LGPD.'),
       h('li', {}, h('strong', {}, 'Não raspa Casa dos Dados nem CNPJ Biz. '),
-        'Ambos atrás de Cloudflare; scraping quebra ToS. Viram links de pesquisa pontual no cockpit.'),
+        'Ambos atrás de Cloudflare e com termos que proíbem raspagem — viram só links de pesquisa pontual. '
+        + 'A mesma base (cadastro de CNPJ) vem direto dos dados abertos da Receita Federal, pelo servidor MCP local '
+        + '(mcp/) e pela importação "Base CNPJ".'),
       h('li', {}, h('strong', {}, 'Cada agente só vê o que é dele. '),
         'Leads e conversas de um agente não aparecem para os colegas; gestores veem tudo. '
         + 'Isso é garantido pelo banco (RLS, migration 0006), não apenas escondido na tela.'),
       h('li', {}, h('strong', {}, 'Não ingere os 4,6 milhões de linhas da ANEEL. '),
         'Isso é trabalho de ETL fora do navegador. Importe recortes por UF/distribuidora.')));
 
+  /* ═══════════ Admin Center: uma seção por vez ═══════════ */
+
+  const SECOES = [
+    { id: 'script', rotulo: 'Script de abordagem', cartoes: [cardScript] },
+    { id: 'pessoas', rotulo: 'Pessoas e papéis', cartoes: [cardContas] },
+    { id: 'supressao', rotulo: 'Opt-out (supressão)', cartoes: [cardSup] },
+    { id: 'links', rotulo: 'Links de pesquisa', cartoes: [cardLinks] },
+    { id: 'distribuidoras', rotulo: 'Distribuidoras', cartoes: [cardConc] },
+    { id: 'listas', rotulo: 'Listas de importação', cartoes: [cardLotes] },
+    { id: 'dados', rotulo: 'Backup e limites', cartoes: [cardBackup, cardSobre] },
+  ];
+  const ativa = SECOES.find((x) => x.id === params.s) || SECOES[0];
+
   raiz.append(
-    cabecalhoPagina('Admin › Configuração', 'Script, supressão, links e operação'),
-    cardScript,
-    cardContas,
-    cardSup,
-    cardLinks,
-    cardConc,
-    cardLotes,
-    cardBackup,
-    cardSobre);
+    cabecalhoPagina('Admin Center', 'Script, pessoas, opt-out, links, distribuidoras e operação'),
+    h('div', { class: 'layout-lateral' },
+      h('nav', { class: 'lateral-views', 'aria-label': 'Seções do Admin Center' },
+        h('h3', {}, 'Configurações'),
+        SECOES.map((x) => h('a', {
+          class: `lateral-views__item${x.id === ativa.id ? ' is-ativa' : ''}`,
+          href: `#/config?s=${x.id}`, 'aria-current': x.id === ativa.id ? 'page' : null,
+        }, x.rotulo))),
+      h('div', { class: 'pagina' }, ...ativa.cartoes)));
   return raiz;
 }
