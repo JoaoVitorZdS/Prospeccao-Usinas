@@ -8,7 +8,7 @@
 // que fica sem dependência nenhuma. Se a versão Next.js do plano nascer depois,
 // troca por `@serwist/turbopack` sem mudar o contrato de cache abaixo.
 
-const VERSAO = 'wattscout-v8';
+const VERSAO = 'wattscout-v10';
 const CACHE_SHELL = `${VERSAO}-shell`;
 
 const ARQUIVOS_SHELL = [
@@ -16,7 +16,9 @@ const ARQUIVOS_SHELL = [
   './index.html',
   './manifest.webmanifest',
   './css/wattscout.css',
-  './vendor/zendesk-garden/css-variables.css',
+  './js/tema-inicial.js',
+  './js/tema.js',
+  './js/dicas.js',
   './vendor/supabase-js-2.112.3.umd.js',
   './js/supabase-config.js',
   './js/app.js',
@@ -31,6 +33,7 @@ const ARQUIVOS_SHELL = [
   './js/db.js',
   './js/parse.js',
   './js/aneel.js',
+  './js/aneel-importacao.js',
   './js/enriquecer.js',
   './js/exporta.js',
   './js/ui.js',

@@ -13,16 +13,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { closeSync, mkdirSync, openSync, writeSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { abrirBanco, metadados, CAMINHO_PADRAO_DB, PASTA_DADOS } from './banco.mjs';
 import {
-  contar, buscar, percorrer, detalhe, buscarCnae, buscarMunicipio, normalizarFiltros, SITUACOES,
+  contar, buscar, detalhe, buscarCnae, buscarMunicipio, normalizarFiltros, SITUACOES,
 } from './consulta.mjs';
 import { descricaoDosPresets } from './cnaes.mjs';
 import { lerListaDeCnpjs } from './lista.mjs';
-import { CABECALHO_EXPORTACAO, linhaExportacao, linhaCsv, BOM, mascaraCnpj, mascaraTelefone } from './formato.mjs';
+import { CABECALHO_EXPORTACAO, mascaraCnpj, mascaraTelefone } from './formato.mjs';
+import { exportarCsv } from './exportar.mjs';
 
 const INSTRUCOES = `Base de CNPJ da Receita Federal (dados abertos), filtrada e local.
 Fluxo típico: cnpj_status (ver o que foi carregado) → cnpj_presets / cnpj_cnae_buscar (achar CNAEs) →
@@ -197,25 +197,13 @@ export function criarServidor({ caminhoDb = CAMINHO_PADRAO_DB, pastaExportacao =
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (args) => {
-    let fd = null;
     try {
       const { arquivo, limite = 5000, incluir_socios: comSocios = false, ...resto } = args;
       const f = prepararFiltros(resto);
       const total = contar(banco(), f);
       if (!total) return falha('Nenhuma empresa atende aos filtros — nada a exportar. Afrouxe os critérios ou confira cnpj_status.');
-      mkdirSync(pastaExportacao, { recursive: true });
       const caminho = resolve(pastaExportacao, nomeSeguro(arquivo));
-      const stmtSocios = comSocios ? banco().prepare(`select s.nome, q.descricao as qualificacao from socio s
-        left join qualificacao q on q.codigo = s.qualificacao_codigo where s.cnpj_basico = ? order by s.entrada, s.nome limit 12`) : null;
-      fd = openSync(caminho, 'w');
-      writeSync(fd, BOM + linhaCsv(CABECALHO_EXPORTACAO));
-      let n = 0;
-      for (const r of percorrer(banco(), f, { limiteTotal: limite })) {
-        writeSync(fd, linhaCsv(linhaExportacao(r, { socios: stmtSocios ? stmtSocios.all(r.cnpj_basico) : [] })));
-        n++;
-      }
-      closeSync(fd);
-      fd = null;
+      const n = exportarCsv(banco(), f, caminho, { limite, comSocios });
       return texto({
         arquivo: caminho, linhas_exportadas: n, total_que_atende_aos_filtros: total, truncado: n < total,
         colunas: CABECALHO_EXPORTACAO,
@@ -223,7 +211,6 @@ export function criarServidor({ caminhoDb = CAMINHO_PADRAO_DB, pastaExportacao =
         aviso_lgpd: 'Empresário individual/MEI (pessoa física) fica de fora por padrão. Use os dados só para prospecção B2B com legítimo interesse e respeite a lista de opt-out do WattScout (a importação aplica a supressão).',
       });
     } catch (e) {
-      if (fd != null) { try { closeSync(fd); } catch { /* ignora */ } }
       return falha(e);
     }
   });

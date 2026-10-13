@@ -8,7 +8,8 @@
     "dev": "node scripts/dev.mjs",
     "start": "node scripts/dev.mjs",
     "test": "node --test \"test/**/*.test.mjs\"",
-    "test:mcp": "pnpm --dir mcp test"
+    "test:mcp": "pnpm --dir mcp test",
+    "sincronizar": "node --disable-warning=ExperimentalWarning --max-old-space-size=8192 scripts/sincronizar.mjs"
   },
   "dependencies": {}
 }

@@ -45,17 +45,24 @@ let _sb = null;
 
 export function abrir() {
   if (_sb) return Promise.resolve(_sb);
-  if (typeof window === 'undefined' || !window.supabase?.createClient) {
+  // No navegador a biblioteca é `window.supabase` (script clássico). No Node (`pnpm sincronizar`) quem chama
+  // coloca o mesmo bundle em `globalThis.supabase` antes — a camada de dados é a mesma nos dois lugares.
+  const emNavegador = typeof window !== 'undefined';
+  const lib = (emNavegador ? window : globalThis).supabase;
+  if (!lib?.createClient) {
     throw new Error(
       'supabase-js não carregou. Confira se vendor/supabase-js-*.umd.js está '
       + 'incluído em index.html ANTES de js/app.js, e se js/supabase-config.js existe '
       + '(copie de supabase-config.example.js e preencha com os dados do seu projeto).',
     );
   }
-  _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  _sb = lib.createClient(SUPABASE_URL, SUPABASE_KEY, {
     // PKCE: o retorno dos links do e-mail vem em `?code=` (e não em `#access_token=`),
-    // que não colide com o roteador por hash (#/rota).
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
+    // que não colide com o roteador por hash (#/rota). No Node não há URL nem armazenamento: a sessão
+    // vive só na memória do processo (a senha é pedida a cada execução).
+    auth: emNavegador
+      ? { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' }
+      : { persistSession: false, autoRefreshToken: true, detectSessionInUrl: false },
   });
   return Promise.resolve(_sb);
 }

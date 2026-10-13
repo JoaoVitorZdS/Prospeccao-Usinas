@@ -36,3 +36,15 @@ test('texto sem nenhuma relação não casa em nenhum dos modos', () => {
   assert.equal(aprox('PADARIA DO ZÉ'), null);
   assert.equal(exato('PADARIA DO ZÉ'), null);
 });
+
+test('razões sociais que a ANEEL usa no lugar da marca casam EXATO com o código certo (achado com a base real)', () => {
+  // ~26 mil usinas da base real ficavam sem distribuidora por causa destes quatro nomes
+  const casos = {
+    'COMPANHIA ENERGETICA DO CEARA': 'ENEL-CE',
+    'COMPANHIA ENERGETICA DE PERNAMBUCO': 'CELPE',
+    'NEOENERGIA DISTRIBUICAO BRASILIA S.A.': 'CEB-DIS',
+    'COMPANHIA DE ELETRICIDADE DO AMAPA CEA': 'EQUATORIAL-AP',
+  };
+  // escritos exatamente como a ANEEL os escreve: o casamento exato compara o texto inteiro
+  for (const [nome, codigo] of Object.entries(casos)) assert.equal(exato(nome), codigo, nome);
+});

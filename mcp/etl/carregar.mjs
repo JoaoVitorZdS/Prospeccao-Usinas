@@ -7,6 +7,7 @@
 //   node etl/carregar.mjs --cnae geracao,comercializacao --uf SP,MG
 //   node etl/carregar.mjs --cnae 3511501 --baixar            # baixa antes, se faltar
 //   node etl/carregar.mjs --cnpjs-arquivo donos-de-usina.csv # só os CNPJs de uma lista (ex.: base ANEEL)
+//   node etl/carregar.mjs --cnpjs-arquivo donos.csv --cnae geracao --uniao   # a lista INTEIRA + quem tem o CNAE
 //
 // Passos (cada arquivo é lido em streaming, nunca inteiro na memória):
 //   A. Estabelecimentos → filtra (situação, CNAE, UF, matriz, lista de CNPJ) e grava;
@@ -33,8 +34,16 @@ const log = (...a) => console.error(...a);
 export function passaNoFiltro(e, f) {
   if (!f.situacoes.has(e.situacao)) return false;
   if (f.soMatriz && !e.matriz) return false;
+  const naLista = !!f.cnpjs && (f.cnpjs.has(e.cnpj) || f.cnpjs.has(e.cnpjBasico));
+  if (f.cnpjs && f.uniao) {
+    // modo união: quem está na lista entra SEM checar UF/CNAE (o dono de usina pode ser de qualquer ramo);
+    // quem não está precisa passar nos critérios — e sem critério nenhum, só a lista vale
+    if (naLista) return true;
+    if (!f.ufs && !f.cnaes) return false;
+  } else if (f.cnpjs && !naLista) {
+    return false;
+  }
   if (f.ufs && !f.ufs.has(e.uf)) return false;
-  if (f.cnpjs && !f.cnpjs.has(e.cnpj) && !f.cnpjs.has(e.cnpjBasico)) return false;
   if (f.cnaes) {
     const codigos = [e.cnaePrincipal, ...e.cnaesSecundarios].filter(Boolean);
     const bate = codigos.some((c) => f.cnaes.exatos.has(c) || [...f.cnaes.prefixos].some((p) => c.startsWith(p)));
@@ -70,17 +79,19 @@ async function carregarTabela(db, pasta, arquivo, sql, preparar) {
 
 /**
  * Carrega a base. `opcoes`: { pasta, saida, competencia, cnaes (resolverCnaes), ufs:Set|null,
- * situacoes:Set, soMatriz, cnpjs:Set|null, incluirEI, comSocios }.
+ * situacoes:Set, soMatriz, cnpjs:Set|null, incluirEI, comSocios, uniao }.
+ * `uniao` (com `cnpjs`): a lista de CNPJs entra INTEIRA, somada a quem passa em cnaes/ufs — em vez de a lista
+ * ser mais um critério que precisa ser atendido junto (padrão).
  */
 export async function carregar({
   pasta, saida = CAMINHO_PADRAO_DB, competencia = '', cnaes = null, ufs = null, situacoes = new Set(['02']),
-  soMatriz = false, cnpjs = null, incluirEI = false, comSocios = true,
+  soMatriz = false, cnpjs = null, incluirEI = false, comSocios = true, uniao = false,
 }) {
   const inicio = Date.now();
   const temp = `${saida}.carregando`;
   rmSync(temp, { force: true });
   const db = criarBanco(temp);
-  const filtro = { situacoes, soMatriz, ufs, cnpjs, cnaes };
+  const filtro = { situacoes, soMatriz, ufs, cnpjs, cnaes, uniao };
   const stats = { lidos: 0, mantidos: 0, malformados: 0 };
 
   try {
@@ -197,6 +208,7 @@ export async function carregar({
       filtros: JSON.stringify({
         situacoes: [...situacoes], uf: ufs ? [...ufs] : null, so_matriz: soMatriz, incluir_ei: incluirEI, com_socios: comSocios,
         cnae: cnaes ? { exatos: [...cnaes.exatos], prefixos: [...cnaes.prefixos] } : null, lista_de_cnpjs: cnpjs ? cnpjs.size : null,
+        uniao,
       }),
     };
     for (const [k, v] of Object.entries(guardar)) meta.run(k, v);
@@ -224,7 +236,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const { opcoes } = lerArgumentos(process.argv.slice(2), {
       competencia: 'valor', dir: 'valor', saida: 'valor', cnae: 'valor', uf: 'valor', situacao: 'valor',
       'cnpjs-arquivo': 'valor', 'so-matriz': 'flag', 'incluir-ei': 'flag', 'sem-socios': 'flag', baixar: 'flag',
-      'partes': 'valor', 'apagar-zips': 'flag',
+      'partes': 'valor', 'apagar-zips': 'flag', uniao: 'flag',
     });
     const raiz = opcoes.dir ? resolve(opcoes.dir) : resolve(PASTA_DADOS, 'downloads');
     const mes = opcoes.competencia || (existsSync(raiz)
@@ -247,6 +259,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       situacoes: new Set((opcoes.situacao || '02').split(',').map((s) => s.trim().padStart(2, '0'))),
       soMatriz: !!opcoes['so-matriz'], incluirEI: !!opcoes['incluir-ei'], comSocios: !opcoes['sem-socios'],
       cnpjs: opcoes['cnpjs-arquivo'] ? lerListaDeCnpjs(resolve(opcoes['cnpjs-arquivo'])) : null,
+      uniao: !!opcoes.uniao,
     });
     log(`\n${r.estabelecimentos.toLocaleString('pt-BR')} estabelecimentos · ${r.empresas.toLocaleString('pt-BR')} empresas · ${r.socios.toLocaleString('pt-BR')} sócios`);
     if (opcoes['apagar-zips']) { rmSync(pasta, { recursive: true, force: true }); log('Zips apagados.'); }

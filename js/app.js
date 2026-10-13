@@ -10,6 +10,8 @@ import { abrir, semearConcessionarias, perfilAtual, getConfig, setConfig, contar
 import { sessaoAtual, sair, aoSair, erroNaUrl, emRecuperacao, limparUrlAuth } from './auth.js';
 import { registrarRota, aliasRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
   icone, avatar, menuSuspenso, vazio } from './ui.js';
+import { iniciarTema, alternarTema, aoMudarTema, preferenciaAtual, proximaPreferencia, ROTULO_PREFERENCIA } from './tema.js';
+import { instalarDicas } from './dicas.js';
 import { criarLeadManual } from './leads-acoes.js';
 import { perfis as listarPerfis } from './db.js';
 import { telaLogin, telaPendente, telaNovaSenha } from './views/login.js';
@@ -32,23 +34,26 @@ import { viewContas } from './views/contas.js';
 // Barra lateral (rail). Os ids de rota que ainda são os antigos (conversas, descobrir, backlog…)
 // só tiveram o rótulo trocado; a renomeação de cada rota acontece junto com a tela refeita
 // (#/fila já virou #/leads e continua funcionando por alias).
+// `principal`: aparece na barra inferior do celular (as demais ficam na folha "Mais"). `grupo`: separa a barra lateral
+// do computador em blocos (dia a dia · prospecção · dados). `curto`: rótulo menor para a barra do celular.
 const NAV_TOPO = [
-  { rota: 'inicio', label: 'Início', icone: 'inicio' },
-  { rota: 'leads', label: 'Leads', icone: 'leads' },
-  { rota: 'negocios', label: 'Negócios', icone: 'negocios' },
-  { rota: 'tarefas', label: 'Tarefas', icone: 'tarefas' },
-  { rota: 'conversas', label: 'Comunicações', icone: 'conversas' },
-  { rota: 'listas', label: 'Listas', icone: 'listas' },
-  { rota: 'descobrir', label: 'Prospecção', icone: 'prospeccao' },
-  { rota: 'backlog', label: 'Mercado', icone: 'mercado' },
-  { rota: 'painel', label: 'Relatórios', icone: 'relatorios' },
-  { rota: 'importar', label: 'Importar', icone: 'importar' },
-  { rota: 'exportar', label: 'Exportar', icone: 'exportar' },
+  { rota: 'inicio', label: 'Início', icone: 'inicio', grupo: 'dia', principal: true },
+  { rota: 'leads', label: 'Leads', icone: 'leads', grupo: 'dia', principal: true },
+  { rota: 'negocios', label: 'Negócios', icone: 'negocios', grupo: 'dia', principal: true },
+  { rota: 'tarefas', label: 'Tarefas', icone: 'tarefas', grupo: 'dia', principal: true },
+  { rota: 'conversas', label: 'Comunicações', curto: 'Conversas', icone: 'conversas', grupo: 'dia', principal: true },
+  { rota: 'listas', label: 'Listas', icone: 'listas', grupo: 'prospeccao' },
+  { rota: 'descobrir', label: 'Prospecção', icone: 'prospeccao', grupo: 'prospeccao' },
+  { rota: 'backlog', label: 'Mercado', icone: 'mercado', grupo: 'prospeccao' },
+  { rota: 'painel', label: 'Relatórios', icone: 'relatorios', grupo: 'prospeccao' },
+  { rota: 'importar', label: 'Importar', icone: 'importar', grupo: 'dados' },
+  { rota: 'exportar', label: 'Exportar', icone: 'exportar', grupo: 'dados' },
 ];
 const NAV_BASE = [
-  { rota: 'contas', label: 'Contas', icone: 'usuario', soGestor: true },
+  { rota: 'contas', label: 'Contas', icone: 'leads', soGestor: true },
   { rota: 'config', label: 'Admin Center', icone: 'admin' },
 ];
+const ICONE_TEMA = { auto: 'auto', claro: 'sol', escuro: 'lua' };
 
 const ctxApp = { perfil: null, ehGestor: false, recarregarApp: null };
 
@@ -56,11 +61,84 @@ const ehGestorPapel = (papel) => papel === 'gestor' || papel === 'admin';
 
 /* ═══════════════ Casca ═══════════════ */
 
+/** Um item da barra lateral: ícone + (só no celular) rótulo; no computador, a etiqueta aparece ao passar o mouse. */
 function itemRail(n, extra) {
   return h('a', {
-    class: 'rail__item', href: `#/${n.rota}`, dataset: { rota: n.rota, rotulo: n.label },
-    'aria-label': n.label,
-  }, icone(n.icone), extra || null);
+    class: `rail__item${n.grupo && !n.principal ? ' rail__item--sec' : ''}`, href: `#/${n.rota}`,
+    dataset: { rota: n.rota, rotulo: n.label }, 'aria-label': n.label, 'data-dica': n.label, 'data-dica-lado': 'direita',
+  }, icone(n.icone), h('span', { class: 'rail__rotulo' }, n.curto || n.label), extra || null);
+}
+
+/** Itens da barra lateral com um separador entre os grupos. */
+function itensRailAgrupados(badgeFila) {
+  const saida = [];
+  let grupo = null;
+  for (const n of NAV_TOPO) {
+    if (grupo && n.grupo !== grupo) saida.push(h('span', { class: 'rail__sep', 'aria-hidden': 'true' }));
+    grupo = n.grupo;
+    saida.push(itemRail(n, n.rota === 'tarefas' ? badgeFila : null));
+  }
+  return saida;
+}
+
+/** Rotas que não têm botão próprio na barra inferior do celular — o botão "Mais" fica ativo nelas. */
+const ROTAS_DO_MAIS = () => new Set([
+  ...NAV_TOPO.filter((n) => !n.principal).map((n) => n.rota), ...NAV_BASE.map((n) => n.rota), 'perfil',
+]);
+
+/** Folha "Mais" (celular): todas as seções que não cabem na barra inferior, com nome. */
+function abrirFolhaMais() {
+  if (document.querySelector('.folha-fundo')) return;
+  const rota = location.hash.replace(/^#\/?/, '').split(/[?/]/)[0];
+  const item = (n) => h('a', {
+    class: `folha__item${n.rota === rota ? ' is-ativa' : ''}`, href: `#/${n.rota}`, onclick: () => fechar(),
+  }, icone(n.icone), n.label);
+  const secoes = [
+    ...NAV_TOPO.filter((n) => !n.principal),
+    ...NAV_BASE.filter((n) => !n.soGestor || ctxApp.ehGestor),
+    { rota: 'perfil', label: 'Meu perfil', icone: 'usuario' },
+  ];
+  const botaoTema = h('button', { class: 'btn', type: 'button', onclick: () => { alternarTema(); redesenharTema(); } });
+  const redesenharTema = () => {
+    const pref = preferenciaAtual();
+    botaoTema.replaceChildren(icone(ICONE_TEMA[pref], { tamanho: 'peq' }), `Tema: ${ROTULO_PREFERENCIA[pref].split(' (')[0]}`);
+  };
+  redesenharTema();
+  const folha = h('div', { class: 'folha', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Todas as seções' },
+    h('div', { class: 'folha__puxador', 'aria-hidden': 'true' }),
+    h('h2', {}, 'Mais seções'),
+    h('div', { class: 'folha__grade' }, secoes.map(item)),
+    h('div', { class: 'folha__acoes' }, botaoTema,
+      h('button', { class: 'btn btn--perigo-fraco', type: 'button', onclick: async () => { await sair(); location.reload(); } },
+        icone('sair', { tamanho: 'peq' }), 'Sair')));
+  const fundo = h('div', { class: 'folha-fundo' }, folha);
+  const teclaEsc = (e) => { if (e.key === 'Escape') fechar(); };
+  function fechar() {
+    document.removeEventListener('keydown', teclaEsc, true);
+    window.removeEventListener('hashchange', fechar);
+    fundo.remove();
+    document.querySelector('.rail__mais')?.focus();
+  }
+  fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fechar(); });
+  document.addEventListener('keydown', teclaEsc, true);
+  window.addEventListener('hashchange', fechar);
+  document.body.append(fundo);
+  folha.querySelector('.folha__item')?.focus({ preventScroll: true });
+}
+
+/** Botão do tema na barra superior: automático → claro → escuro. Mostra o tema atual e a etiqueta diz o próximo. */
+function botaoTemaTopo() {
+  const b = h('button', { class: 'btn-icone btn-tema', type: 'button', 'data-dica-lado': 'baixo', onclick: () => alternarTema() });
+  const redesenhar = () => {
+    const pref = preferenciaAtual();
+    b.replaceChildren(icone(ICONE_TEMA[pref]));
+    const texto = `Tema: ${ROTULO_PREFERENCIA[pref]} — clique para ${ROTULO_PREFERENCIA[proximaPreferencia(pref)].toLowerCase()}`;
+    b.setAttribute('aria-label', texto);
+    b.setAttribute('data-dica', texto);
+  };
+  aoMudarTema(redesenhar);
+  redesenhar();
+  return b;
 }
 
 function montarShell() {
@@ -70,7 +148,12 @@ function montarShell() {
     h('a', { class: 'rail__marca', href: '#/inicio', 'aria-label': 'WattScout — início', title: 'WattScout' },
       h('img', { src: 'icons/icon-192.png', alt: '', width: '32', height: '32' })),
     h('div', { class: 'rail__itens' },
-      NAV_TOPO.map((n) => itemRail(n, n.rota === 'tarefas' ? badgeFila : null))),
+      itensRailAgrupados(badgeFila),
+      // só aparece no celular: abre a folha com todas as seções que não cabem na barra inferior
+      h('button', {
+        class: 'rail__item rail__mais', type: 'button', dataset: { rota: 'mais' }, 'aria-label': 'Mais seções', 'aria-haspopup': 'dialog',
+        onclick: abrirFolhaMais,
+      }, icone('grade'), h('span', { class: 'rail__rotulo' }, 'Mais'))),
     h('div', { class: 'rail__base' },
       NAV_BASE.filter((n) => !n.soGestor || ctxApp.ehGestor).map((n) => itemRail(n))));
 
@@ -88,8 +171,9 @@ function montarShell() {
     },
   }, icone('busca', { tamanho: 'peq' }), campoBusca);
 
-  const botaoNovo = h('button', { class: 'btn btn--primario btn--mini', type: 'button' },
-    icone('mais', { tamanho: 'peq' }), 'Novo');
+  const botaoNovo = h('button', {
+    class: 'btn btn--primario btn--mini', type: 'button', 'data-dica': 'Criar lead, importar planilha ou prospectar usinas',
+  }, icone('mais', { tamanho: 'peq' }), 'Novo');
   const menuNovo = menuSuspenso(botaoNovo, [
     {
       rotulo: 'Novo lead', icone: 'leads',
@@ -107,7 +191,7 @@ function montarShell() {
 
   const topo = h('header', { class: 'topo' },
     busca,
-    h('div', { class: 'topo__dir' }, menuNovo));
+    h('div', { class: 'topo__dir' }, botaoTemaTopo(), menuNovo));
 
   document.body.prepend(rail, topo);
   return { badgeFila };
@@ -119,7 +203,7 @@ const ROTULO_PAPEL = { agente: 'Agente', gestor: 'Gestor', admin: 'Administrador
 async function atualizarChip() {
   const p = ctxApp.perfil;
   // botão novo a cada chamada: menuSuspenso() registra o clique no botão que recebe
-  const chip = h('button', { class: 'perfil-chip', id: 'perfil-chip', type: 'button' });
+  const chip = h('button', { class: 'perfil-chip', id: 'perfil-chip', type: 'button', 'data-dica': 'Menu da conta' });
   chip.replaceChildren(
     avatar(p.nome),
     h('span', { class: 'perfil-chip__nome' }, p.nome),
@@ -182,7 +266,9 @@ function registrarSW() {
 
 function prepararInstalacao() {
   let evento = null;
-  const botao = h('button', { class: 'btn btn--mini btn--instalar', hidden: true }, '⇩ Instalar app');
+  const botao = h('button', {
+    class: 'btn btn--mini btn--instalar', hidden: true, 'data-dica': 'Instalar o WattScout como aplicativo', 'aria-label': 'Instalar app',
+  }, icone('importar', { tamanho: 'peq' }), h('span', { class: 'btn__rotulo' }, 'Instalar app'));
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     evento = e;
@@ -240,6 +326,8 @@ function bannerConectividade() {
 const faltaMigration = (e) => /reivindicar_perfil|PGRST202|Could not find the function/i.test(`${e?.message} ${e?.codigo}`);
 
 async function boot() {
+  iniciarTema();    // claro/escuro/automático — vale também para as telas de login
+  instalarDicas();  // etiquetas ao passar o mouse nos itens do menu
   if (location.protocol === 'file:') {
     document.body.replaceChildren(h('div', { class: 'erro-fatal' },
       h('h1', {}, 'Abra por um servidor local'),

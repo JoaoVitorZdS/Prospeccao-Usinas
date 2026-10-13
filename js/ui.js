@@ -1,5 +1,5 @@
 // ui.js — primitivas de interface do WattScout.
-// Estilos em css/wattscout.css (tokens do Zendesk Garden em vendor/zendesk-garden/).
+// Estilos em css/wattscout.css (tokens de cor dos temas claro e escuro).
 // Nada aqui usa innerHTML: DOM sempre via h() ou createElementNS (CSP script-src 'self').
 
 import { h, esc, $, limpar } from './util.js';
@@ -358,6 +358,11 @@ const ICONES = {
   fechar: [['path', 'M6 6l12 12M18 6L6 18']],
   filtro: [['path', 'M3 5h18l-7 8v6l-4-2v-4z']],
   raio: [['path', 'M13 2L4 14h7l-1 8 9-12h-7z']],
+  // tema (claro / escuro / automático) e o botão "Mais" do celular
+  sol: [['circle', 12, 12, 4], ['path', 'M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4']],
+  lua: [['path', 'M20.5 14.2A8.5 8.5 0 019.8 3.5a8.5 8.5 0 1010.7 10.7z']],
+  auto: [['circle', 12, 12, 9], ['path', 'M12 3a9 9 0 010 18z']],
+  grade: [['path', 'M4 4h6.5v6.5H4zM13.5 4H20v6.5h-6.5zM4 13.5h6.5V20H4zM13.5 13.5H20V20h-6.5z']],
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -563,8 +568,13 @@ export async function renderRota() {
   const render = rotas.get(nome) || rotas.get('inicio');
   const alvo = $('#conteudo');
   rotaAtual = nome;
+  const noMenu = nome === 'lead' ? 'leads' : nome; // a página de um lead acende "Leads"
   document.querySelectorAll('.rail__item').forEach((a) =>
-    a.classList.toggle('is-ativa', a.dataset.rota === nome));
+    a.classList.toggle('is-ativa', a.dataset.rota === noMenu));
+  // no celular, as seções que não cabem na barra inferior moram em "Mais": o botão acende quando uma delas está aberta
+  const ativo = document.querySelector('.rail__item.is-ativa:not(.rail__mais)');
+  document.querySelector('.rail__mais')?.classList.toggle('is-ativa',
+    nome === 'perfil' || !!ativo && (ativo.classList.contains('rail__item--sec') || !!ativo.closest('.rail__base')));
   alvo.setAttribute('aria-busy', 'true');
   alvo.replaceChildren(h('div', { class: 'carregando' }, 'Carregando…'));
   try {

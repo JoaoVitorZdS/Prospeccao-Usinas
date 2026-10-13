@@ -56,6 +56,7 @@ function resolverArquivo(urlPath) {
   if (alvo !== RAIZ && !alvo.startsWith(RAIZ + sep)) return null; // fuga da raiz
   const relativo = alvo.slice(RAIZ.length + 1).split(sep).join('/');
   if (BLOQUEADAS.some((b) => relativo === b || relativo.startsWith(`${b}/`))) return null;
+  if (relativo.split('/').some((parte) => parte.startsWith('.env'))) return null; // credenciais do sincronizador
   try {
     const st = statSync(alvo);
     if (st.isDirectory()) {

@@ -121,9 +121,12 @@ export const ehEmpresarioIndividual = (e) =>
   /^\s*2135\b|empres[aá]rio\s*\(\s*individual\s*\)/i.test(String(e?.natureza_juridica ?? ''));
 
 /**
- * Uma linha mapeada (campos de CAMPOS_CNPJ, tudo texto) → objeto pronto para `upsert` em `empresa`,
- * ou `{ erro }`. Só inclui o que veio preenchido: no upsert, coluna ausente não é sobrescrita, então
- * importar um CSV pobre nunca apaga dado já enriquecido nem os agregados da ANEEL.
+ * Uma linha mapeada (campos de CAMPOS_CNPJ, tudo texto) → objeto com só o que veio preenchido, ou `{ erro }`.
+ *
+ * ATENÇÃO ao gravar: num upsert EM LOTE o PostgREST usa a união das colunas de todas as linhas e grava NULL nas
+ * linhas que não têm uma delas — por cima do dado existente. Por isso este objeto NÃO vai direto para o banco
+ * quando a empresa já existe: `classificarLinhasCnpj` o mescla com a linha atual (veredito `atualiza`) e
+ * `gruposParaGravar` grava novas e atualizadas em lotes separados.
  */
 export function linhaParaEmpresa(b, { fonte = 'receita_federal', competencia } = {}) {
   const cnpj = normCnpj(b.cnpj);
@@ -164,4 +167,94 @@ export function linhaParaEmpresa(b, { fonte = 'receita_federal', competencia } =
   poe('socios', socios);
   poe('competencia_cadastro', competencia);
   return { empresa: e };
+}
+
+/** Cada linha mapeada (CAMPOS_CNPJ) vira { b, r: { empresa } | { erro } }. */
+export function converterLinhasCnpj(brutos, { competencia } = {}) {
+  return brutos.map((b) => ({ b, r: linhaParaEmpresa(b, { competencia }) }));
+}
+
+/**
+ * Veredito por linha da Base CNPJ — a parte PURA da análise. A tela de Importar e o `pnpm sincronizar` buscam
+ * os dados de apoio (opt-out, empresas já gravadas, leads existentes) e chamam aqui, então os dois decidem igual.
+ *
+ * Cada linha vira uma `empresa`. Veredito: NOVO (não existia), ATUALIZA (já existia: o que veio preenchido é
+ * mesclado sobre a linha atual — o que veio vazio NÃO apaga o que já está lá, nem os agregados da ANEEL) ou fora
+ * (sem CNPJ, repetido, opt-out, pessoa física, não ativa). Contato (telefone/e-mail) em opt-out é descartado,
+ * como no enriquecimento.
+ *
+ * @param conv        saída de `converterLinhasCnpj`
+ * @param supressao   { testar({cnpj,telefone,email}) → motivo|null }  (db.carregarSupressao)
+ * @param existentes  Map cnpj → linha atual de `empresa` (db.empresasPorCnpj)
+ * @param cacheLeads  só com `criarLeads`: { porCnpj: Map } dos leads existentes (db.cacheDedup)
+ */
+export function classificarLinhasCnpj(conv, {
+  supressao, existentes, cacheLeads = null, incluirEI = false, soAtivas = true, criarLeads = false,
+}) {
+  const vistos = new Map();
+  const itens = [];
+
+  for (const { b, r } of conv) {
+    const item = { _linha: b._linha, bruto: b, erros: [] };
+    itens.push(item);
+    if (r.erro) { item.veredito = 'sem_id'; item.erros.push(r.erro); continue; }
+    const e = r.empresa;
+    item.empresa = e;
+    if (vistos.has(e.cnpj)) {
+      item.veredito = 'duplicado_lote';
+      item.detalhe = `igual à linha ${vistos.get(e.cnpj) + 1} deste mesmo arquivo`;
+      continue;
+    }
+    vistos.set(e.cnpj, b._linha);
+
+    const motivo = supressao.testar({ cnpj: e.cnpj, telefone: e.telefone1, email: e.email });
+    if (motivo === 'cnpj') { item.veredito = 'suprimido'; item.detalhe = 'opt-out registrado por cnpj'; continue; }
+    if (!incluirEI && ehEmpresarioIndividual(e)) {
+      item.veredito = 'pf';
+      item.detalhe = 'empresário individual (pessoa física)';
+      continue;
+    }
+    if (soAtivas && e.situacao_cadastral && e.situacao_cadastral !== 'Ativa') {
+      item.veredito = 'inativa';
+      item.detalhe = `situação: ${e.situacao_cadastral}`;
+      continue;
+    }
+    // contato em opt-out não entra na base (o CNPJ em si pode entrar)
+    const tirados = [];
+    if (e.telefone1 && supressao.testar({ telefone: e.telefone1 })) { delete e.telefone1; tirados.push('telefone'); }
+    if (e.telefone2 && supressao.testar({ telefone: e.telefone2 })) { delete e.telefone2; tirados.push('telefone 2'); }
+    if (e.email && supressao.testar({ email: e.email })) { delete e.email; tirados.push('e-mail'); }
+
+    const atual = existentes.get(e.cnpj);
+    if (atual) {
+      item.veredito = 'atualiza';
+      // linha COMPLETA (o que já está lá + o que veio preenchido): é o que impede o upsert em lote de gravar NULL
+      item.empresa = { ...atual, ...e, updated_at: new Date().toISOString() };
+    } else {
+      item.veredito = 'novo';
+    }
+    const notas = [];
+    if (tirados.length) notas.push(`${tirados.join(' e ')} em opt-out — descartado`);
+    if (criarLeads) {
+      if (cacheLeads.porCnpj.has(e.cnpj)) { item.jaTemLead = true; notas.push('já tem lead — só a empresa é gravada'); }
+      else item.vaiViraLead = true;
+    }
+    if (notas.length) item.detalhe = notas.join(' · ');
+  }
+  return { tipo: 'cnpj', itens };
+}
+
+/**
+ * As empresas a gravar, em dois grupos que NUNCA se misturam num mesmo lote de upsert (ver `linhaParaEmpresa`):
+ * `novos` (só os campos preenchidos — coluna ausente vira NULL, que é o que a linha nova já tem) e `atualizados`
+ * (linhas completas, mescladas). Itens fora do recorte (pf, inativa, suprimido…) não entram.
+ */
+export function gruposParaGravar(itens) {
+  const novos = [];
+  const atualizados = [];
+  for (const i of itens) {
+    if (i.veredito === 'novo') novos.push(i.empresa);
+    else if (i.veredito === 'atualiza') atualizados.push(i.empresa);
+  }
+  return { novos, atualizados };
 }
