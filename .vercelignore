@@ -11,3 +11,8 @@ node_modules/
 mcp/
 .mcp.json
 supabase/tests/
+
+# Scripts de linha de comando (pnpm dev / sincronizar) e credenciais locais — nunca no deploy
+scripts/
+.env
+.env.*

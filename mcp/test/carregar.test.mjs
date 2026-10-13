@@ -116,3 +116,35 @@ test('passaNoFiltro — cada critério sozinho', () => {
 test('estab() de teste tem 30 colunas — protege os próprios testes', () => {
   assert.equal(estab({ basico: '1', cnae: '1' }).split('";"').length, 30);
 });
+
+test('passaNoFiltro — modo união: quem está na lista entra sem checar UF/CNAE; os demais precisam dos critérios', () => {
+  const dono = { cnpj: '44444444000190', cnpjBasico: '44444444', situacao: '02', matriz: true, uf: 'GO', cnaePrincipal: '0111301', cnaesSecundarios: [] };
+  const energia = { cnpj: '11111111000100', cnpjBasico: '11111111', situacao: '02', matriz: true, uf: 'SP', cnaePrincipal: '3511501', cnaesSecundarios: [] };
+  const base = { situacoes: new Set(['02']), soMatriz: false, ufs: new Set(['SP']), cnaes: resolverCnaes(['geracao']), cnpjs: new Set(['44444444']) };
+  // padrão (E): a lista é mais um critério — o dono de usina do agro cai fora por UF e CNAE
+  assert.equal(passaNoFiltro(dono, base), false);
+  assert.equal(passaNoFiltro(energia, base), false, 'e quem tem o CNAE mas não está na lista também');
+  // união (OU)
+  const u = { ...base, uniao: true };
+  assert.equal(passaNoFiltro(dono, u), true, 'na lista: entra de qualquer ramo/UF');
+  assert.equal(passaNoFiltro(energia, u), true, 'fora da lista mas com CNAE e UF: entra');
+  assert.equal(passaNoFiltro({ ...energia, uf: 'MG' }, u), false, 'fora da lista e fora da UF: não');
+  assert.equal(passaNoFiltro({ ...dono, situacao: '08' }, u), false, 'baixada nunca entra, nem estando na lista');
+  // união sem critério nenhum: só a lista vale
+  const soLista = { situacoes: new Set(['02']), soMatriz: false, ufs: null, cnaes: null, cnpjs: new Set(['44444444']), uniao: true };
+  assert.equal(passaNoFiltro(dono, soLista), true);
+  assert.equal(passaNoFiltro(energia, soLista), false);
+});
+
+test('carga em modo união — a lista inteira somada a quem tem o CNAE/UF', async () => {
+  const pasta = criarPastaRfb();
+  const saida = novoDb();
+  await carregar({
+    pasta, saida, cnaes: resolverCnaes(['geracao']), ufs: new Set(['SP']), cnpjs: new Set(['44444444']), uniao: true,
+  });
+  const basicos = q(saida, 'select distinct cnpj_basico b from estabelecimento order by b').map((x) => x.b);
+  assert.ok(basicos.includes('44444444'), 'o dono de usina do agro entrou pela lista');
+  assert.ok(basicos.includes('11111111'), 'e quem tem o CNAE de geração em SP também');
+  assert.ok(!basicos.includes('22222222'), 'MG sem estar na lista fica de fora');
+  assert.equal(JSON.parse(q(saida, "select valor from meta where chave = 'filtros'")[0].valor).uniao, true);
+});

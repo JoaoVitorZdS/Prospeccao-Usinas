@@ -56,7 +56,8 @@ pnpm --dir mcp carregar -- --cnpjs-arquivo donos-de-usina.csv
 |---|---|
 | `--cnae` | Presets (`geracao`, `comercializacao`, `instalacao`, `material`, `rede`), códigos de 7 dígitos ou prefixos. Casa também CNAE **secundário**. |
 | `--uf` | Siglas separadas por vírgula. |
-| `--cnpjs-arquivo` | `.txt`/`.csv` com CNPJs (um por linha ou 1ª coluna), de 14 dígitos ou o "básico" de 8. |
+| `--cnpjs-arquivo` | `.txt`/`.csv` com CNPJs (um por linha ou 1ª coluna), de 14 dígitos ou o "básico" de 8. Por padrão é mais um critério (E) junto de `--cnae`/`--uf`. |
+| `--uniao` | Com `--cnpjs-arquivo`: a lista entra **inteira** (de qualquer ramo/UF) **somada** a quem passa em `--cnae`/`--uf` (OU). É o que o `pnpm sincronizar` usa. |
 | `--situacao` | Padrão `02` (ativa). Ex.: `02,03`. |
 | `--so-matriz` | Só matrizes. |
 | `--incluir-ei` | **Não recomendado.** Mantém empresário individual/MEI (pessoa física). |
@@ -109,6 +110,16 @@ Filtros (todos combinam em **E**): `cnae` (+ `cnae_modo`), `uf`, `municipio`, `p
 
 Exemplo de conversa: *"Quantas geradoras ativas há em Minas com capital acima de 500 mil? Exporte as 300 maiores com
 telefone, incluindo sócios."* → `cnpj_contar` → `cnpj_exportar` (`limite: 300`, `incluir_socios: true`).
+
+## Exportar sem o Claude
+
+```bash
+pnpm --dir mcp exportar                                  # tudo o que está carregado → dados/exportacoes/cnpj-AAAAMMDD.csv
+pnpm --dir mcp exportar -- --saida geradoras.csv --uf SP --cnae geracao
+```
+
+Gera o mesmo CSV da ferramenta `cnpj_exportar`. Para fazer **tudo** (ANEEL + Receita + gravação) sem intervenção, use o
+`pnpm sincronizar` da raiz (ver `SETUP.md`).
 
 ## 5. Importar no WattScout
 

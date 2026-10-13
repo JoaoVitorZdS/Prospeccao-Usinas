@@ -93,6 +93,16 @@ pura — sem Pillow, sem npm):
 python3 icons/gen-icons.py
 ```
 
+## Aparência: tema claro, escuro e automático
+
+O botão de meia-lua/sol na barra superior alterna **automático (segue o sistema) → claro → escuro**; a escolha fica gravada
+no navegador. As cores moram só em `css/wattscout.css`, em dois blocos de variáveis (`:root` e `:root[data-tema="escuro"]`),
+então ajustar uma cor é mexer em uma linha. `test/css.test.mjs` confere o contraste (WCAG AA) de todos os pares de texto
+nos dois temas e reprova um tema escuro que esqueça de redefinir uma cor do claro.
+
+No computador, passar o mouse (ou focar com o teclado) num ícone do menu mostra o nome da seção. No celular, a barra
+inferior mostra as 5 seções principais com nome e o botão **Mais** abre todas as outras.
+
 ## Testes
 
 `test/` cobre as funções puras (`util.js`, `parse.js`) e a extração de dados da
@@ -128,7 +138,11 @@ manter esse hábito ao estender o importador.
    o app descompacta e filtra PJ **em streaming**, sem nunca montar o CSV inteiro
    (~1 GB descomprimido) na memória; só usinas PJ (a imensa maioria é PF e é
    descartada no caminho). O CSV do SIGA baixa pronto, sem precisar de ZIP.
-() => b
+4. Em **Prospecção**, filtre e clique em "Criar leads". Em **Início**, veja o que
+   fazer hoje; em **Leads**, abra o contato e comece a abordar. Em **Negócios**,
+   arraste o cartão para mudar a etapa do funil; em **Tarefas**, veja o que vence
+   primeiro. Em **Comunicações**, acompanhe quem está esperando resposta — é a
+   mesma base de toques, organizada como caixa de entrada em três painéis.
 
 ## Enriquecimento de contato (OpenCNPJ)
 
@@ -263,12 +277,74 @@ pnpm --dir mcp carregar -- --cnae geracao,instalacao --uf SP,MG
 - **Prospecção** continua mostrando por padrão só empresas **com usina** (as da ANEEL); desmarque "Só empresas com
   usina (ANEEL)" para ver as que vieram só da Base CNPJ.
 - **Limites honestos**: não existe CNAE de "energia solar" (usinas se registram em *Geração de energia elétrica*); o
-  dono de uma usina de GD costuma ser de qualquer ramo e só aparece pela ANEEL — use `--cnpjs-arquivo` para cruzar os
-  CNPJs dos donos de usina com o cadastro da Receita. Telefone/e-mail da Receita são, muitas vezes, do contador.
+  dono de uma usina de GD costuma ser de qualquer ramo e só aparece pela ANEEL — use `--cnpjs-arquivo` (com `--uniao`,
+  para somar à lista os CNAEs de energia) para cruzar os CNPJs dos donos de usina com o cadastro da Receita; o
+  `pnpm sincronizar` (abaixo) faz esse cruzamento sozinho. Telefone/e-mail da Receita são, muitas vezes, do contador.
 - **LGPD**: empresário individual/MEI (pessoa física) fica de fora por padrão; CPF de sócio nunca é gravado; a
   importação aplica o opt-out. `mcp/dados/` não vai para o git nem para o deploy.
 - O arquivo CSV importado é lido inteiro na memória do navegador: exportações de até algumas dezenas de milhares de
-  linhas funcionam bem; para listas maiores, exporte em várias partes (`limite`) ou por UF.
+  linhas funcionam bem; para listas maiores, exporte em várias partes (`limite`) ou por UF — **ou use o comando
+  automático abaixo**, que não tem esse limite.
+
+## Sincronização automática (`pnpm sincronizar`)
+
+Traz as bases públicas para o WattScout **sem abrir o navegador e sem clicar em nada**: as duas fontes têm URL de
+download direto (ANEEL e Receita), então não precisa de Playwright nem de Python — o comando usa os mesmos módulos
+JavaScript da tela de Importar, então decide exatamente igual.
+
+```bash
+pnpm sincronizar --dry-run     # 1ª vez: faz tudo MENOS gravar, e mostra o resumo
+pnpm sincronizar               # tudo: distribuidoras → ANEEL → Receita (pergunta antes de gravar)
+pnpm sincronizar --so aneel    # só uma etapa (distribuidoras, aneel, receita)
+pnpm sincronizar --sim         # sem a pergunta (execução agendada)
+pnpm sincronizar --ajuda       # todas as opções
+```
+
+| Etapa | O que faz |
+|---|---|
+| `distribuidoras` | Cadastro de distribuidoras e backlog inicial (só o que falta). |
+| `aneel` | Baixa o ZIP da GD (~110 MB) e o CSV do SIGA, filtra **PJ** em streaming (a GD tem 4,6 milhões de linhas, ~92% PF), grava `usina_aneel`, liga cada usina à distribuidora **(só casamento exato)**, agrega `empresa` por CNPJ e registra o lote. |
+| `receita` | Lista os **donos de usina** (vindos da ANEEL), baixa o cadastro de CNPJ da Receita (retomável), carrega num SQLite local com **donos de usina + CNAEs de energia** (`geracao`, `comercializacao`; mude com `--cnae`/`--uf`, ou `--so-donos`), exporta o CSV e grava em `empresa` com a lógica de "Importar → Base CNPJ". |
+
+- **Credenciais**: uma conta de **gestor** (a ANEEL grava `usina_aneel`, que só gestor pode). Coloque
+  `WATTSCOUT_EMAIL` e `WATTSCOUT_SENHA` no ambiente ou num `.env.local` (copie de `.env.local.example`; fica fora do git
+  e do deploy) — ou deixe em branco e o comando pergunta. Recomendado: **uma conta só para isso**, aprovada como gestor
+  em Admin Center › Pessoas. O comando entra como qualquer usuário e o RLS vale igual: **não existe `service_role`** aqui.
+- **Antes de rodar**: migrations `0007`, `0008` e `0009` aplicadas (a `0009` acrescenta aliases de distribuidoras que a
+  ANEEL escreve pela razão social e que deixariam ~26 mil usinas sem distribuidora).
+- **Tempo** (medido com os arquivos reais): ANEEL ≈ 2 min e ~2,5 GB de memória. Receita: a primeira vez baixa ~6 GB
+  (~30 min) e fica em `mcp/dados/downloads/` (as execuções seguintes do mesmo mês não baixam de novo). **Esses zips são
+  só arquivos de trabalho no seu computador, não vão para o Supabase**: depois de carregar, `--apagar-zips` libera o disco
+  (e `mcp/dados/sincronizacao/` pode ser apagada a qualquer hora; ela se refaz).
+- **Espaço no Supabase — leia antes de gravar.** O plano grátis tem **500 MB de banco por projeto**, somando tudo o que o
+  app já guarda (leads, conversas…); ao passar disso o projeto vira **somente leitura**. O que vai para o banco é só o
+  resultado filtrado, mas a base da ANEEL sozinha já é metade disso. Medido com os arquivos reais (estimativa de
+  tamanho no Postgres, índices incluídos; a simulação `--dry-run` mostra a sua em "Espaço estimado"):
+
+  | Recorte da ANEEL | Empresas | Usinas | Espaço |
+  |---|---:|---:|---:|
+  | base inteira (padrão) | 281.857 | 390.149 | ≈ 255 MB |
+  | `--potencia-min 30` | 116.279 | 210.189 | ≈ 124 MB |
+  | `--potencia-min 75` | 46.679 | 119.610 | ≈ 64 MB |
+  | `--potencia-min 150` | 16.645 | 73.091 | ≈ 34 MB |
+  | `--potencia-min 75 --uf SP,MG` | 12.582 | 28.761 | ≈ 16 MB |
+
+  `--potencia-min` filtra pela potência **somada da empresa** (a régua que a tela Prospecção já usa): a empresa fica
+  inteira ou sai. A base é muito concentrada — a mediana é 20 kW por usina e só 17% das empresas somam 75 kW ou mais
+  (elas têm 31% das usinas). A Receita soma o cadastro dessas mesmas empresas (a simulação estima esse acréscimo).
+  Quem precisar de tudo e passar de 500 MB tem o plano Pro (US$ 25/mês, 8 GB). O recorte vale **a partir de agora**:
+  o que já está gravado de uma execução anterior não é apagado.
+- **Atualização**: rode de novo quando quiser — é idempotente (upsert pela chave da usina/CNPJ; nada duplica). A Receita
+  publica **uma vez por mês**; a ANEEL atualiza com mais frequência. Quem já existe é **mesclado**: telefone e e-mail que
+  você enriquecera continuam lá, mesmo que o arquivo novo venha sem eles.
+- **Agendar no Windows** (Agendador de Tarefas): ação "Iniciar um programa" → `pnpm`, argumentos
+  `sincronizar --sim`, "Iniciar em" → a pasta do repositório. Mensal costuma bastar.
+- **O que ele não faz, de propósito**: não cria leads (quem fica com cada empresa é decisão sua — use Importar →
+  Base CNPJ com "Criar leads"); não aplica casamento **aproximado** de distribuidora (aparece no resumo para você conferir
+  em Mercado › Reassociar); não toca no Casa dos Dados (Cloudflare e termos que proíbem raspagem — a fonte aberta da
+  Receita é a mesma base, ver LIA seção 2-A). Opt-out é aplicado como na tela.
+- Os arquivos baixados e o SQLite da etapa Receita ficam em `mcp/dados/sincronizacao/` (fora do git e do deploy). Esse
+  SQLite é separado do `cnpj.sqlite` do servidor MCP — não sobrescreve a sua carga manual.
 
 ## Backup
 
@@ -403,7 +479,7 @@ ignorado — o Chrome avisa isso no console de propósito).
 
 `vercel.json` já está no repo com os headers acima, `Cache-Control:
 no-cache` no `sw.js`/`index.html` (evita demora pra pegar atualização do
-service worker) e cache longo/imutável pros ícones. () => b
+service worker) e cache longo/imutável pros ícones. Rotas usam `#/leads`, `#/negocios` etc.
 (hash, não path) — como o fragmento nunca vai pro servidor, **não precisa de
 rewrite de SPA**, qualquer host estático serve isto sem configuração especial
 de roteamento.
@@ -445,8 +521,9 @@ wattscout/
 ├─ vercel.json                      # headers de segurança + cache para deploy real
 ├─ .vercelignore                    # exclusões extras só pra `vercel deploy` direto do disco
 ├─ package.json                     # só pra `npm test` — zero dependência de runtime
-├─ css/wattscout.css                 # sistema visual (casca, componentes) sobre os tokens do Garden
-├─ vendor/zendesk-garden/          # tokens de cor do Zendesk Garden (Apache-2.0) + LICENSE e NOTICE
+├─ css/wattscout.css                 # sistema visual: tokens de cor dos temas claro e escuro + componentes
+├─ js/tema.js, js/tema-inicial.js    # tema claro/escuro/automático (o segundo pinta antes do CSS, sem piscar)
+├─ js/dicas.js                       # etiquetas ao passar o mouse nos itens do menu
 ├─ scripts/dev.mjs                 # servidor de desenvolvimento (pnpm dev)
 ├─ mcp/                            # servidor MCP da base de CNPJ da Receita (pacote separado; ver mcp/README.md)
 ├─ .mcp.json                       # registra o servidor wattscout-cnpj no Claude Code

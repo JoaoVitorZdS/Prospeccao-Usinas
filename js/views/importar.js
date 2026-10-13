@@ -22,14 +22,13 @@ import {
   todos, get, put, criarLead, salvarLead, cacheDedup, carregarSupressao, registrarLote,
   casarConcessionaria, agregarEmpresas, putMuitos, registrarInteracao, empresasPorCnpj,
 } from '../db.js';
-import { CAMPOS_CNPJ, linhaParaEmpresa, ehEmpresarioIndividual } from '../cnpj-importacao.js';
+import { CAMPOS_CNPJ, converterLinhasCnpj, classificarLinhasCnpj, gruposParaGravar } from '../cnpj-importacao.js';
 import {
   cabecalhoPagina, card, tabela, toast, vazio, badge, kpi, barraProgresso, confirmar, pills,
 } from '../ui.js';
 import { navegar } from '../ui.js';
-import {
-  RECURSOS_ANEEL, AMOSTRAS, extrairProprietariosSiga, splitMunicipioUF, lerZipCsvStream,
-} from '../aneel.js';
+import { RECURSOS_ANEEL, AMOSTRAS, lerZipCsvStream } from '../aneel.js';
+import { analisarAneel } from '../aneel-importacao.js';
 
 export async function viewImportar(params, ctxApp) {
   const { perfil, ehGestor } = ctxApp;
@@ -440,7 +439,7 @@ export async function viewImportar(params, ctxApp) {
 
   async function analisar() {
     const brutos = aplicarMapa(estado.linhas, estado.mapa);
-    if (estado.modo === 'aneel') return analisarAneel(brutos);
+    if (estado.modo === 'aneel') return analisarAneel(brutos, { casarConcessionaria });
     if (estado.modo === 'cnpj') return analisarCnpj(brutos);
     return analisarLeads(brutos);
   }
@@ -452,54 +451,14 @@ export async function viewImportar(params, ctxApp) {
    */
   async function analisarCnpj(brutos) {
     const supressao = await carregarSupressao();
-    const conv = brutos.map((b) => ({ b, r: linhaParaEmpresa(b, { competencia: estado.competencia || undefined }) }));
+    const conv = converterLinhasCnpj(brutos, { competencia: estado.competencia || undefined });
     const cnpjs = conv.map(({ r }) => r.empresa?.cnpj).filter(Boolean);
-    const existentes = new Set((await empresasPorCnpj(cnpjs)).map((e) => e.cnpj));
+    const existentes = new Map((await empresasPorCnpj(cnpjs)).map((e) => [e.cnpj, e]));
     const cacheLeads = estado.criarLeads ? await cacheDedup({ cnpjs, fones: [], emails: [] }) : null;
-    const vistos = new Map();
-    const itens = [];
-
-    for (const { b, r } of conv) {
-      const item = { _linha: b._linha, bruto: b, erros: [] };
-      itens.push(item);
-      if (r.erro) { item.veredito = 'sem_id'; item.erros.push(r.erro); continue; }
-      const e = r.empresa;
-      item.empresa = e;
-      if (vistos.has(e.cnpj)) {
-        item.veredito = 'duplicado_lote';
-        item.detalhe = `igual à linha ${vistos.get(e.cnpj) + 1} deste mesmo arquivo`;
-        continue;
-      }
-      vistos.set(e.cnpj, b._linha);
-
-      const motivo = supressao.testar({ cnpj: e.cnpj, telefone: e.telefone1, email: e.email });
-      if (motivo === 'cnpj') { item.veredito = 'suprimido'; item.detalhe = 'opt-out registrado por cnpj'; continue; }
-      if (!estado.incluirEI && ehEmpresarioIndividual(e)) {
-        item.veredito = 'pf';
-        item.detalhe = 'empresário individual (pessoa física)';
-        continue;
-      }
-      if (estado.soAtivas && e.situacao_cadastral && e.situacao_cadastral !== 'Ativa') {
-        item.veredito = 'inativa';
-        item.detalhe = `situação: ${e.situacao_cadastral}`;
-        continue;
-      }
-      // contato em opt-out não entra na base (o CNPJ em si pode entrar)
-      const tirados = [];
-      if (e.telefone1 && supressao.testar({ telefone: e.telefone1 })) { delete e.telefone1; tirados.push('telefone'); }
-      if (e.telefone2 && supressao.testar({ telefone: e.telefone2 })) { delete e.telefone2; tirados.push('telefone 2'); }
-      if (e.email && supressao.testar({ email: e.email })) { delete e.email; tirados.push('e-mail'); }
-
-      item.veredito = existentes.has(e.cnpj) ? 'atualiza' : 'novo';
-      const notas = [];
-      if (tirados.length) notas.push(`${tirados.join(' e ')} em opt-out — descartado`);
-      if (estado.criarLeads) {
-        if (cacheLeads.porCnpj.has(e.cnpj)) { item.jaTemLead = true; notas.push('já tem lead — só a empresa é gravada'); }
-        else item.vaiViraLead = true;
-      }
-      if (notas.length) item.detalhe = notas.join(' · ');
-    }
-    return { tipo: 'cnpj', itens };
+    return classificarLinhasCnpj(conv, {
+      supressao, existentes, cacheLeads,
+      incluirEI: estado.incluirEI, soAtivas: estado.soAtivas, criarLeads: estado.criarLeads,
+    });
   }
 
   async function analisarLeads(brutos) {
@@ -632,101 +591,6 @@ export async function viewImportar(params, ctxApp) {
 
   const nomeDe = (id) => perfis.find((p) => p.id === id)?.nome || '—';
 
-  /**
-   * O SIGA não tem coluna de CNPJ — o(s) dono(s) vêm em texto livre na coluna
-   * `proprietario_regime` (`extrairProprietariosSiga`, validado contra as
-   * 25.264 linhas reais do dump). Uma usina em coparticipação gera MAIS DE UM
-   * item aqui — um por dono — porque o modelo de dados é "um lead por CNPJ",
-   * não "um lead por usina" (seção 5.1 do plano).
-   */
-  function proprietariosDaLinha(b) {
-    const docBruto = String(b.cnpj || '');
-    if (docBruto && !/\*/.test(docBruto)) {
-      const cnpj = normCnpj(docBruto);
-      if (cnpj) return [{ cnpj, titular: (b.titular || '').trim() || null, regime: null }];
-    }
-    if (b.proprietario_regime) {
-      return extrairProprietariosSiga(b.proprietario_regime)
-        .map((p) => ({ cnpj: p.cnpj, titular: p.nome, regime: p.regime }));
-    }
-    return [];
-  }
-
-  async function analisarAneel(brutos) {
-    const itens = [];
-    const vistos = new Set();
-    for (const b of brutos) {
-      const tipoCons = (b.tipo_consumidor || '').trim().toUpperCase();
-      const docBruto = String(b.cnpj || '');
-      const mascarado = /\*/.test(docBruto);
-
-      // Recorte PJ, sempre. PF vem mascarado pela ANEEL e não se reidentifica (seção 9).
-      // Só se aplica quando existe coluna de tipo_consumidor (GD) — o SIGA não tem PF.
-      if (mascarado || tipoCons === 'PF' || (docBruto && digitsLen(docBruto) === 11)) {
-        itens.push({ _linha: b._linha, bruto: b, erros: [], veredito: 'pf', detalhe: 'titular PF — fora do recorte, por desenho' });
-        continue;
-      }
-
-      const donos = proprietariosDaLinha(b);
-      if (!donos.length) {
-        itens.push({
-          _linha: b._linha, bruto: b, erros: ['CNPJ ausente ou ilegível'], veredito: 'sem_id',
-        });
-        continue;
-      }
-
-      // O SIGA traz `DscMuninicpios` como "Cidade - UF" MESMO quando também existe
-      // uma coluna de UF separada (`SigUFPrincipal`) — sem isso o texto duplica
-      // ("Nova Lima - MG/MG" na tela). Por isso o split roda sempre que o texto
-      // parece combinado, não só quando falta a coluna de UF.
-      const municipioTexto = (b.municipio || '').trim();
-      const combinado = /-\s*[A-Za-z]{2}$/.test(municipioTexto) ? splitMunicipioUF(municipioTexto) : null;
-
-      for (let i = 0; i < donos.length; i++) {
-        const dono = donos[i];
-        const item = { _linha: b._linha, bruto: b, erros: [] };
-        const cod = (b.cod_empreendimento || '').trim()
-          ? `${b.cod_empreendimento.trim()}${donos.length > 1 ? `-${i + 1}` : ''}`
-          : `${dono.cnpj}-${slug(b.municipio)}-${slug(b.dt_conexao)}-${b._linha}-${i}`;
-        if (vistos.has(cod)) {
-          itens.push({ ...item, veredito: 'duplicado_lote', detalhe: 'código repetido no arquivo' });
-          continue;
-        }
-        vistos.add(cod);
-
-        item.usina = {
-          cod_empreendimento: cod,
-          cnpj: dono.cnpj,
-          titular: dono.titular,
-          tipo_consumidor: 'PJ',
-          distribuidora_nome: (b.distribuidora_nome || '').trim() || null,
-          distribuidora_cnpj: normCnpj(b.distribuidora_cnpj) || null,
-          concessionaria_codigo: b.distribuidora_nome ? await casarConcessionaria(b.distribuidora_nome) : null,
-          uf: (b.uf || '').trim().toUpperCase().slice(0, 2) || combinado?.uf || null,
-          municipio: (combinado?.municipio || b.municipio || '').trim() || null,
-          cep: (b.cep || '').replace(/\D/g, '').slice(0, 8) || null,
-          potencia_kw: parseNum(b.potencia_kw),
-          tipo_geracao: (b.tipo_geracao || '').trim().toUpperCase() || null,
-          porte: (b.porte || '').trim() || null,
-          modalidade: (b.modalidade || '').trim() || null,
-          classe_consumo: (b.classe_consumo || '').trim() || null,
-          dt_conexao: parseData(b.dt_conexao),
-          fase_usina: (b.fase_usina || '').trim() || null,
-          fonte: b.fase_usina || b.proprietario_regime ? 'aneel_siga' : 'aneel_gd',
-          ingerido_em: new Date().toISOString(),
-        };
-        if (dono.regime) item.usina.modalidade = item.usina.modalidade || dono.regime;
-        if (!item.usina.concessionaria_codigo && item.usina.distribuidora_nome) {
-          item.avisoConc = item.usina.distribuidora_nome;
-        }
-        item.veredito = 'novo';
-        itens.push(item);
-      }
-    }
-    return { tipo: 'aneel', itens };
-  }
-
-  const digitsLen = (v) => String(v).replace(/\D/g, '').length;
 
   /* ═══════════ Etapa 3 — prévia ═══════════ */
 
@@ -908,10 +772,16 @@ export async function viewImportar(params, ctxApp) {
             nome: nomeDaLista(), total: itens.length, criados: 0, duplicados: 0, erros: 0,
           });
         }
+        // novas e já existentes em lotes SEPARADOS: misturar faria o upsert gravar NULL nas colunas ausentes
         const passo = 500;
-        for (let i = 0; i < aGravar.length; i += passo) {
-          await putMuitos('empresa', aGravar.slice(i, i + passo).map((x) => x.empresa));
-          prog.atualizar(Math.min(i + passo, aGravar.length), aGravar.length, `empresas: ${Math.min(i + passo, aGravar.length)}/${aGravar.length}`);
+        const { novos, atualizados } = gruposParaGravar(itens);
+        let gravadas = 0;
+        for (const grupo of [novos, atualizados]) {
+          for (let i = 0; i < grupo.length; i += passo) {
+            await putMuitos('empresa', grupo.slice(i, i + passo));
+            gravadas += Math.min(passo, grupo.length - i);
+            prog.atualizar(gravadas, aGravar.length, `empresas: ${gravadas}/${aGravar.length}`);
+          }
         }
         resumo.criados = aGravar.filter((i) => i.veredito === 'novo').length;
         resumo.mesclados = aGravar.length - resumo.criados;
