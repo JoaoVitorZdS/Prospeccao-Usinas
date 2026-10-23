@@ -13,4 +13,14 @@
   var raiz = document.documentElement;
   raiz.setAttribute('data-tema', tema);
   raiz.style.colorScheme = tema;
+
+  // iPhone/iPad: o CSS tem ajustes próprios (alvos de toque de 44px, campos a 16px para o Safari não dar zoom,
+  // recorte da barra de status). iPadOS se anuncia como Mac — o que denuncia é a tela de toque.
+  try {
+    var n = window.navigator;
+    if (/iphone|ipad|ipod/i.test(n.userAgent) || (n.platform === 'MacIntel' && n.maxTouchPoints > 1)) {
+      raiz.setAttribute('data-ios', '');
+      if (n.standalone === true || matchMedia('(display-mode: standalone)').matches) raiz.setAttribute('data-standalone', '');
+    }
+  } catch (e) { /* sem navigator (testes): segue sem os ajustes */ }
 })();

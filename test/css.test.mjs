@@ -81,7 +81,7 @@ test('contraste — o ícone/texto da barra lateral (branco ~74%) fica legível 
 test('tema escuro — redefine TODAS as cores do claro (nada do tema claro vaza para o escuro)', () => {
   const soNoClaro = Object.keys(claro).filter((k) => !(k in variaveisDo(':root[data-tema="escuro"]')))
     // medidas e fontes são iguais nos dois temas de propósito
-    .filter((k) => !/^--(fonte|mono|raio|raio-peq|raio-grande|raio-card|lateral-largura|topo-altura|nav-mobile)$/.test(k));
+    .filter((k) => !/^--(fonte|mono|raio|raio-peq|raio-grande|raio-card|lateral-largura|topo-altura|nav-mobile|teclado|vv-topo)$/.test(k));
   assert.deepEqual(soNoClaro, [], 'variáveis de cor que o tema escuro esqueceu de redefinir');
 });
 

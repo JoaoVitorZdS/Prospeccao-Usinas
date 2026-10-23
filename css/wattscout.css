@@ -39,6 +39,8 @@
   --lateral-largura: 68px;
   --topo-altura: 60px;
   --nav-mobile: 64px;
+  --teclado: 0px;   /* altura do teclado do iPhone sobre a tela — js/ui.js atualiza pelo visualViewport */
+  --vv-topo: 0px;   /* quanto o Safari rolou a página por baixo com o teclado aberto */
 
   --raio-peq: 6px;
   --raio: 8px;
@@ -838,6 +840,85 @@ a.kpi--link:hover { border-color: var(--primaria); box-shadow: var(--sombra-alta
   .caixa--detalhe .caixa__lista { display: none; }
   .caixa--detalhe .caixa__conversa { display: flex; }
   .caixa__voltar { display: inline-flex; }
+}
+
+/* ═══ Toque, iPhone e iPad ═══
+   O app roda em tela cheia no iPhone (viewport-fit=cover + barra de status translúcida): sem os recortes abaixo, a barra
+   de cima e o "×" das gavetas ficavam DEBAIXO do relógio/notch — dava para abrir e não dava para fechar.
+   env(safe-area-inset-*) vale 0 fora do iPhone, então estas regras são inofensivas no resto. */
+html:has(body.sem-scroll) { overflow: hidden; }
+body.sem-scroll { overscroll-behavior: none; }
+.modal-fundo, .drawer-fundo, .folha-fundo { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.modal, .drawer, .folha { cursor: auto; }
+.drawer, .modal__corpo, .folha { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.modal__puxador { display: none; }
+.topo { padding-top: env(safe-area-inset-top); height: calc(var(--topo-altura) + env(safe-area-inset-top)); }
+
+:root[data-ios] { -webkit-tap-highlight-color: transparent; }
+:root[data-ios] body { -webkit-touch-callout: none; }
+:root[data-ios] input, :root[data-ios] select, :root[data-ios] textarea { -webkit-touch-callout: default; }
+/* abaixo de 16px o Safari dá zoom na página ao focar o campo — e não volta sozinho */
+:root[data-ios] input[type=text], :root[data-ios] input[type=search], :root[data-ios] input[type=email],
+:root[data-ios] input[type=password], :root[data-ios] input[type=tel], :root[data-ios] input[type=date],
+:root[data-ios] input[type=number], :root[data-ios] input:not([type]), :root[data-ios] select, :root[data-ios] textarea { font-size: 16px; }
+/* 44px: o alvo de toque mínimo da Apple. 34px no dedo é errar o "×" metade das vezes */
+:root[data-ios] .btn-icone { width: 44px; height: 44px; font-size: 26px; }
+:root[data-ios] .btn { min-height: 42px; }
+:root[data-ios] .btn--mini { min-height: 36px; }
+:root[data-ios] .btn:active, :root[data-ios] .btn-icone:active, :root[data-ios] .chip--copia:active { transform: scale(.97); opacity: .85; }
+/* iPad em paisagem/tela cheia: nada encostado nas bordas arredondadas */
+:root[data-ios] .rail { padding-top: max(14px, env(safe-area-inset-top)); }
+
+@media (max-width: 760px) {
+  .topo { height: calc(56px + env(safe-area-inset-top)); padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  :root[data-ios] .rail { padding-top: 0; }
+
+  /* Modal vira folha que sobe de baixo (como as do iOS): botões ao alcance do polegar, puxador para arrastar e fechar */
+  .modal-fundo {
+    place-items: end stretch;
+    padding: calc(env(safe-area-inset-top) + var(--vv-topo) + 10px) 0 var(--teclado);
+    animation: fundo-entra .16s ease-out;
+  }
+  .modal {
+    max-width: 100% !important; max-height: 100%; border-radius: 20px 20px 0 0; border-bottom: 0;
+    animation: folha-sobe .22s cubic-bezier(.2, .8, .2, 1); transition: transform .2s ease-out;
+  }
+  .modal__puxador { display: block; flex: none; width: 42px; height: 5px; border-radius: 5px; background: var(--borda-forte); margin: 8px auto 2px; touch-action: none; }
+  .modal__topo { padding: 4px 8px 0 18px; gap: 8px; touch-action: none; }
+  .modal__topo h2 { font-size: 17px; }
+  .modal__corpo { padding: 14px 18px; }
+  .modal__acoes { padding: 12px 18px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--borda); }
+  .modal__acoes .btn { flex: 1 1 0; min-height: 46px; }
+
+  /* Gaveta (cockpit) em tela cheia: entra de baixo e a barra com o "×" GRUDA no topo, abaixo do relógio/notch.
+     O cabeçalho vira display:contents para a barra ser filha direta da gaveta e o sticky valer na rolagem toda. */
+  .drawer { transform: translateY(28px); }
+  .drawer .cockpit { padding: 0 max(16px, env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .drawer .cockpit__topo { display: contents; }
+  .drawer .cockpit__navfila {
+    order: -1; position: sticky; top: 0; z-index: 6; justify-content: flex-end; gap: 8px;
+    margin: 0 calc(-1 * max(16px, env(safe-area-inset-right))) 0 calc(-1 * max(16px, env(safe-area-inset-left)));
+    padding: calc(env(safe-area-inset-top) + 6px) max(8px, env(safe-area-inset-right)) 6px max(16px, env(safe-area-inset-left));
+    background: var(--bg); background: color-mix(in srgb, var(--bg) 86%, transparent);
+    -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px);
+    border-bottom: 1px solid var(--borda); touch-action: none;
+  }
+  /* alça visual de "puxe para fechar" no meio da barra */
+  .drawer .cockpit__navfila::before {
+    content: ""; position: absolute; left: 50%; bottom: 5px; width: 36px; height: 4px; margin-left: -18px;
+    border-radius: 4px; background: var(--borda-forte); opacity: .7;
+  }
+  .drawer .cockpit__pos { margin-right: auto; }
+  .drawer .cockpit__ident { padding-top: 2px; }
+  .drawer .cockpit__ident h2 { font-size: 19px; line-height: 1.25; overflow-wrap: anywhere; }
+  .cockpit__fatos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fato strong { overflow-wrap: anywhere; }
+  .bloco { padding: 14px 16px; }
+
+  .folha { max-height: calc(100dvh - env(safe-area-inset-top) - 24px); padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); transition: transform .2s ease-out; }
+  .folha__puxador { width: 42px; height: 5px; touch-action: none; }
+  .folha > h2 { touch-action: none; }
+  .toasts { bottom: calc(var(--nav-mobile) + env(safe-area-inset-bottom) + 10px + var(--teclado)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
