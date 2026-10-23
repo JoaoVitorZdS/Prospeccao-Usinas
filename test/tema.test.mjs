@@ -106,3 +106,25 @@ test('tema-inicial.js — localStorage bloqueado (lança) ainda resolve pelo sis
   vm.runInNewContext(codigo, sandbox);
   assert.equal(atributos['data-tema'], 'escuro');
 });
+
+test('tema-inicial.js — marca iPhone/iPad (inclusive iPadOS que se diz Mac) com data-ios, e só eles', () => {
+  const codigo = readFileSync(join(RAIZ, 'js/tema-inicial.js'), 'utf8');
+  const casos = [
+    [{ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 }, true],
+    [{ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 5 }, true],
+    [{ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 0 }, false],
+    [{ userAgent: 'Mozilla/5.0 (Linux; Android 14)', platform: 'Linux armv8l', maxTouchPoints: 5 }, false],
+  ];
+  for (const [navigator, ios] of casos) {
+    const atributos = {};
+    const sandbox = {
+      localStorage: { getItem: () => null },
+      matchMedia: () => ({ matches: false }),
+      navigator,
+      document: { documentElement: { setAttribute: (k, v) => { atributos[k] = v; }, style: {} } },
+    };
+    sandbox.window = sandbox;
+    vm.runInNewContext(codigo, sandbox);
+    assert.equal('data-ios' in atributos, ios, navigator.userAgent);
+  }
+});

@@ -26,18 +26,107 @@ export function toast(mensagem, tipo = 'info', ms = 3600) {
   return fechar;
 }
 
+/* ═══════════════ Camadas (modal, gaveta, folha) — toque e iPhone ═══════════════ */
+
+let travasRolagem = 0;
+
+/** Trava a rolagem da página atrás de uma camada. Contada: modal aberto em cima da gaveta não destrava ao fechar. */
+export function travarRolagem() {
+  if (travasRolagem++ === 0) document.body.classList.add('sem-scroll');
+  let solta = false;
+  return () => {
+    if (solta) return;
+    solta = true;
+    if (--travasRolagem === 0) document.body.classList.remove('sem-scroll');
+  };
+}
+
+/**
+ * Fecha ao tocar no fundo escurecido. `click` (e não `mousedown`): o Safari do iPhone não manda eventos de mouse
+ * para uma div sem `click` — por isso o fundo não fechava nada. O toque precisa COMEÇAR no fundo também, senão
+ * arrastar para selecionar um texto e soltar fora fecharia a camada.
+ */
+export function fecharAoTocarFora(fundo, fechar) {
+  let comecouNoFundo = false;
+  fundo.addEventListener('pointerdown', (e) => { comecouNoFundo = e.target === fundo; });
+  fundo.addEventListener('click', (e) => {
+    if (comecouNoFundo && e.target === fundo) fechar();
+    comecouNoFundo = false;
+  });
+}
+
+const ARRASTO_FECHA = 90; // px puxados para baixo que fecham a camada
+
+/**
+ * Puxar para baixo fecha (o gesto das folhas do iOS). Só começa num toque dentro de `seletor` (a alça/cabeçalho),
+ * para não brigar com a rolagem do conteúdo, e nunca num botão ou campo.
+ */
+export function arrastarParaFechar(area, alvo, fechar, { seletor = null, soCelular = false } = {}) {
+  let y0 = null;
+  let dy = 0;
+  area.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    if (seletor && !e.target.closest(seletor)) return;
+    if (e.target.closest('button, a, input, select, textarea, label')) return;
+    if (soCelular && !matchMedia('(max-width: 760px)').matches) return;
+    y0 = e.touches[0].clientY;
+    dy = 0;
+    alvo.style.transition = 'none';
+  }, { passive: true });
+  area.addEventListener('touchmove', (e) => {
+    if (y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    alvo.style.transform = dy ? `translateY(${dy}px)` : '';
+  }, { passive: true });
+  const soltar = () => {
+    if (y0 == null) return;
+    y0 = null;
+    alvo.style.transition = '';
+    if (dy > ARRASTO_FECHA) fechar();
+    else alvo.style.transform = '';
+  };
+  area.addEventListener('touchend', soltar);
+  area.addEventListener('touchcancel', soltar);
+}
+
+let tecladoAcompanhado = false;
+
+/**
+ * No iPhone o teclado NÃO encolhe a tela: ele cobre o que está fixo embaixo (os botões da folha/modal).
+ * --teclado e --vv-topo dizem ao CSS quanto da tela o teclado tomou e quanto a página rolou por baixo.
+ */
+function acompanharTeclado() {
+  const vv = window.visualViewport;
+  if (tecladoAcompanhado || !vv) return;
+  tecladoAcompanhado = true;
+  const raiz = document.documentElement.style;
+  const atualizar = () => {
+    raiz.setProperty('--teclado', `${Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))}px`);
+    raiz.setProperty('--vv-topo', `${Math.max(0, Math.round(vv.offsetTop))}px`);
+  };
+  vv.addEventListener('resize', atualizar);
+  vv.addEventListener('scroll', atualizar);
+  atualizar();
+}
+
 /* ═══════════════ Modal ═══════════════ */
 
 export function modal({ titulo, corpo, acoes = [], largura = '520px', aoFechar }) {
+  acompanharTeclado();
   const fundo = h('div', { class: 'modal-fundo' });
   const caixa = h('div', {
     class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': titulo,
     style: `max-width:${largura}`,
   });
+  const destravar = travarRolagem();
 
+  let fechado = false;
   const fechar = (valor) => {
+    if (fechado) return;
+    fechado = true;
     document.removeEventListener('keydown', onTecla, true);
     fundo.remove();
+    destravar();
     aoFechar?.(valor);
   };
   const onTecla = (e) => {
@@ -45,6 +134,7 @@ export function modal({ titulo, corpo, acoes = [], largura = '520px', aoFechar }
   };
 
   caixa.append(...limpar(
+    h('div', { class: 'modal__puxador', 'aria-hidden': 'true' }),
     h('div', { class: 'modal__topo' },
       h('h2', {}, titulo),
       h('button', { class: 'btn-icone', 'aria-label': 'Fechar', onclick: () => fechar(null) }, '×')),
@@ -62,10 +152,14 @@ export function modal({ titulo, corpo, acoes = [], largura = '520px', aoFechar }
   ));
 
   fundo.append(caixa);
-  fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fechar(null); });
+  fecharAoTocarFora(fundo, () => fechar(null));
+  arrastarParaFechar(caixa, caixa, () => fechar(null), { seletor: '.modal__puxador, .modal__topo', soCelular: true });
   document.addEventListener('keydown', onTecla, true);
   document.body.append(fundo);
-  setTimeout(() => caixa.querySelector('input,textarea,select,button')?.focus(), 40);
+  // no toque não foca sozinho: o foco programático só faria o Safari rolar a tela (o teclado nem abre)
+  if (!matchMedia('(pointer: coarse)').matches) {
+    setTimeout(() => caixa.querySelector('input,textarea,select,button')?.focus(), 40);
+  }
   return { fechar, caixa };
 }
 
@@ -139,20 +233,21 @@ export function drawer({ conteudo, aoFechar, largura = '760px' }) {
     class: 'drawer', role: 'dialog', 'aria-modal': 'true', style: `max-width:${largura}`,
   }, conteudo);
   fundo.append(painel);
-  fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fecharDrawer(); });
+  fecharAoTocarFora(fundo, fecharDrawer);
+  // no celular a gaveta ocupa a tela toda: puxar a barra de cima para baixo fecha, como uma folha do iOS
+  arrastarParaFechar(painel, painel, fecharDrawer, { seletor: '.cockpit__navfila', soCelular: true });
   document.body.append(fundo);
-  document.body.classList.add('sem-scroll');
-  drawerAberto = { fundo, aoFechar, painel };
+  drawerAberto = { fundo, aoFechar, painel, destravar: travarRolagem() };
   setTimeout(() => painel.classList.add('is-aberto'), 10);
   return painel;
 }
 
 export function fecharDrawer() {
   if (!drawerAberto) return;
-  const { fundo, aoFechar } = drawerAberto;
+  const { fundo, aoFechar, destravar } = drawerAberto;
   drawerAberto = null;
   fundo.remove();
-  document.body.classList.remove('sem-scroll');
+  destravar();
   aoFechar?.();
 }
 
@@ -410,7 +505,7 @@ export function menuSuspenso(botao, itens, { alinhar = 'dir' } = {}) {
     aberto.remove();
     aberto = null;
     botao.setAttribute('aria-expanded', 'false');
-    document.removeEventListener('mousedown', foraClique, true);
+    document.removeEventListener('pointerdown', foraClique, true);
     document.removeEventListener('keydown', teclaEsc, true);
     window.removeEventListener('scroll', aoRolar, true);
     window.removeEventListener('resize', fechar);
@@ -447,7 +542,7 @@ export function menuSuspenso(botao, itens, { alinhar = 'dir' } = {}) {
     ancora.append(aberto);
     posicionar();
     botao.setAttribute('aria-expanded', 'true');
-    document.addEventListener('mousedown', foraClique, true);
+    document.addEventListener('pointerdown', foraClique, true);
     document.addEventListener('keydown', teclaEsc, true);
     aberto.querySelector('.menu__item')?.focus({ preventScroll: true });
     window.addEventListener('scroll', aoRolar, true);
@@ -520,7 +615,8 @@ export function chipFiltro({ rotulo, resumo = '', corpo, aoLimpar, aberto = fals
 // Um único listener global fecha os popovers de chip quando o clique cai fora deles
 // (em vez de um listener novo a cada render da tela). Chips que saíram do DOM são descartados.
 const chipsAbertos = new Set();
-if (typeof document !== 'undefined') document.addEventListener('mousedown', (e) => {
+// pointerdown e não mousedown: no iPhone um toque fora (numa área sem clique) não gera mousedown nenhum
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', (e) => {
   for (const c of chipsAbertos) {
     if (!c.raiz.isConnected) { chipsAbertos.delete(c); continue; }
     if (!c.popover.hidden && !c.raiz.contains(e.target)) {

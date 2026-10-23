@@ -9,7 +9,7 @@ import { h, $, fmtNum, hojeISO } from './util.js';
 import { abrir, semearConcessionarias, perfilAtual, getConfig, setConfig, contar, buscarLeads } from './db.js';
 import { sessaoAtual, sair, aoSair, erroNaUrl, emRecuperacao, limparUrlAuth } from './auth.js';
 import { registrarRota, aliasRota, renderRota, navegar, toast, modal, drawerEstaAberto, fecharDrawer,
-  icone, avatar, menuSuspenso, vazio } from './ui.js';
+  icone, avatar, menuSuspenso, vazio, travarRolagem, fecharAoTocarFora, arrastarParaFechar } from './ui.js';
 import { iniciarTema, alternarTema, aoMudarTema, preferenciaAtual, proximaPreferencia, ROTULO_PREFERENCIA } from './tema.js';
 import { instalarDicas } from './dicas.js';
 import { criarLeadManual } from './leads-acoes.js';
@@ -113,13 +113,16 @@ function abrirFolhaMais() {
         icone('sair', { tamanho: 'peq' }), 'Sair')));
   const fundo = h('div', { class: 'folha-fundo' }, folha);
   const teclaEsc = (e) => { if (e.key === 'Escape') fechar(); };
+  const destravar = travarRolagem();
   function fechar() {
     document.removeEventListener('keydown', teclaEsc, true);
     window.removeEventListener('hashchange', fechar);
     fundo.remove();
+    destravar();
     document.querySelector('.rail__mais')?.focus();
   }
-  fundo.addEventListener('mousedown', (e) => { if (e.target === fundo) fechar(); });
+  fecharAoTocarFora(fundo, fechar);
+  arrastarParaFechar(folha, folha, fechar, { seletor: '.folha__puxador, .folha > h2' });
   document.addEventListener('keydown', teclaEsc, true);
   window.addEventListener('hashchange', fechar);
   document.body.append(fundo);
